@@ -7,6 +7,13 @@ import wandb
 
 
 class HMM(th.nn.Module):
+    log_likelihood_afferent: Float64[th.Tensor, "in_features out_features"]
+    "Probability of the input spike given the latent variable, shape of: (in_features, out_features)"
+    log_likelihood_lateral: Float64[th.Tensor, "out_features out_features"]
+    "Probability of the latent variable given the previous latent variable, shape of: (out_features, out_features)"
+    log_prior: Float64[th.Tensor, "out_features"]
+    "Marginal probability of the latent variable, shape of: (out_features, )"
+
     def __init__(
         self,
         in_features: int,
@@ -16,6 +23,7 @@ class HMM(th.nn.Module):
         sigma: int = 10,
         tau: float = 5.0,
         num_paths: int = 10,
+        dtype: th.dtype = th.float64,
     ) -> None:
         super(HMM, self).__init__()
         self.in_features = in_features
@@ -35,15 +43,17 @@ class HMM(th.nn.Module):
         self.inverse_lr_decay = 1
         "To garantee the convergence of the algorithm"
 
-        self.log_likelihood_afferent = th.nn.Parameter(
-            th.rand(in_features, out_features) * -1 - 1, requires_grad=False
+        log_likelihood_afferent = (
+            th.rand(in_features, out_features, dtype=dtype) * -1 - 1
         )
-        self.log_likelihood_lateral = th.nn.Parameter(
-            th.rand(out_features, out_features) * -1 - 1, requires_grad=False
+        log_likelihood_lateral = (
+            th.rand(out_features, out_features, dtype=dtype) * -1 - 1
         )
-        self.log_prior = th.nn.Parameter(
-            th.rand(out_features) * -1 - 1, requires_grad=False
-        )
+        log_prior = th.rand(out_features, dtype=dtype) * -1 - 1
+        self.register_buffer("log_likelihood_afferent", log_likelihood_afferent)
+        self.register_buffer("log_likelihood_lateral", log_likelihood_lateral)
+        self.register_buffer("log_prior", log_prior)
+
         self.normalize_probs()
 
         self.trace_pre_afferent: Float64[th.Tensor, "Batch in_features"]
@@ -189,8 +199,8 @@ class HMM(th.nn.Module):
                 Assume that there is always exactly one spike at each time step, following discussed circuit homeostasis in the paper.
                 Sample latent states multiple times to estimate the mean of importance weights.
                 """
-                state_candidates = th.distributions.Categorical(posteriors).sample(
-                    (self.num_paths,)
+                state_candidates = (
+                    th.distributions.Categorical(posteriors).sample((self.num_paths,)).T
                 )  # (Batch, Paths)
                 assert state_candidates.shape == (batch, self.num_paths)
                 state_candidates = (
@@ -210,9 +220,11 @@ class HMM(th.nn.Module):
                             instantaneous_input_ll[i][j] = marginal_ll[x_t[i]][
                                 :, prev_state_candidates[i, j].argmax(dim=0)
                             ].sum()
-                instantaneous_input_ll = instantaneous_input_ll[
-                    :, 0
-                ] - instantaneous_input_ll.logsumexp(dim=1)
+                instantaneous_input_ll = (
+                    instantaneous_input_ll[:, 0]
+                    - instantaneous_input_ll.logsumexp(dim=1)
+                    + th.log(th.tensor(self.num_paths))
+                )
                 log_importance_weights += instantaneous_input_ll
 
                 self.save_trace(x_t, prev_states, state)
