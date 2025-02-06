@@ -115,35 +115,25 @@ class HMM(th.nn.Module):
 
         ##############################################
         # Save the afferent stdp
-        pre_post_afferent = (
-            self.log_likelihood_afferent.exp()
-            * (
-                self.trace_pre_afferent.unsqueeze(2)
-                @ lateral_current.double().unsqueeze(1)
-            )
-            - 1
-        )
+        pre_post_afferent = (-self.log_likelihood_afferent).exp() * (
+            self.trace_pre_afferent.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
+        ) - 1
         post_pre_afferent = afferent.double().unsqueeze(2) @ self.trace_post.unsqueeze(
             1
         )
         self.dw_afferent += pre_post_afferent - post_pre_afferent
         ##############################################
         # Save the lateral stdp
-        pre_post_lateral = (
-            self.log_likelihood_lateral.exp()
-            * (
-                self.trace_pre_lateral.unsqueeze(2)
-                @ lateral_current.double().unsqueeze(1)
-            )
-            - 1
-        )
+        pre_post_lateral = (-self.log_likelihood_lateral).exp() * (
+            self.trace_pre_lateral.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
+        ) - 1
         post_pre_lateral = lateral_prev.double().unsqueeze(
             2
         ) @ self.trace_post.unsqueeze(1)
         self.dw_lateral += pre_post_lateral - post_pre_lateral
         ##############################################
         # Save the prior stdp
-        self.db += self.log_prior.exp() * lateral_current.double() - (
+        self.db += (-self.log_prior).exp() * lateral_current.double() - (
             1 - lateral_current.double()
         )
 
@@ -167,7 +157,7 @@ class HMM(th.nn.Module):
         batch, num_steps, in_features = x.shape
 
         # Begin rejection sampling
-        for trial in tqdm(counter):
+        for trial in tqdm(counter, leave=False):
             potentials = th.zeros(batch, self.out_features, device=x.device)
 
             # The "0" state is the initial state: s_0.
@@ -199,6 +189,7 @@ class HMM(th.nn.Module):
                     + prev_states.double() @ self.log_likelihood_lateral
                     + self.log_prior
                 )
+
                 posteriors = potentials.softmax(dim=1)
                 """
                 Assume that there is always exactly one spike at each time step, following discussed circuit homeostasis in the paper.

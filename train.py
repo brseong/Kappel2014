@@ -68,11 +68,6 @@ if __name__ == "__main__":
             data = data.view(data.shape[0], num_steps, -1).to(device)
             target = target.to(device)
             pred = net(data)
-            if len(feature_map) == 2:
-                ewma = (
-                    ewma * 0.99 + (target / 3 - pred.float()).abs().mean().item() * 0.01
-                )
-                wandb.log({"target-pred": ewma})
             if i % 10 == 0:
                 for k in range(out_features):
                     log_likelihood_k_afferent = net.log_likelihood_afferent[:, k]
