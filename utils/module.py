@@ -97,6 +97,8 @@ class HMM(th.nn.Module):
             (batch, self.out_features), dtype=th.float64, device=x.device
         )
 
+    # trace_table = []
+
     def save_trace(
         self,
         afferent: Bool[th.Tensor, "Batch in_features"],
@@ -105,6 +107,7 @@ class HMM(th.nn.Module):
     ):
         ##############################################
         # Update the traces
+        # self.trace_table.append(self.trace_pre_afferent[0, 0].item())
         self.trace_pre_afferent += (
             -self.trace_pre_afferent / self.tau + afferent.double()
         )
@@ -146,6 +149,20 @@ class HMM(th.nn.Module):
         )
         self.log_prior += self.learning_rate * self.db[index] / self.inverse_lr_decay
 
+        # data = [*zip(range(len(self.trace_table)), self.trace_table)]
+        # wandb.log(
+        #     {
+        #         "trace": wandb.plot.line(
+        #             wandb.Table(
+        #                 data=data,
+        #                 columns=["t", "trace"],
+        #             ),
+        #             "t",
+        #             "trace",
+        #         ),
+        #     }
+        # )
+
         self.inverse_lr_decay += 1
         self.normalize_probs()
 
@@ -181,6 +198,7 @@ class HMM(th.nn.Module):
             ).log()  # (in_features, out_features)
             self.reset_trace(batch, x)
 
+            traj = [[] for _ in range(batch)]
             for t in range(num_steps):
                 x_t = x[:, t]
                 potentials = (
@@ -228,6 +246,9 @@ class HMM(th.nn.Module):
 
                 self.save_trace(x_t, prev_states, states)
 
+                for i in range(batch):
+                    traj[i].append([t, states[i].int().argmax().item()])
+
                 prev_states = states
                 prev_state_candidates = state_candidates
 
@@ -242,7 +263,16 @@ class HMM(th.nn.Module):
                     "log importance weights": log_importance_weights.mean(),
                 }
             )
-
+            for i in range(batch):
+                wandb.log(
+                    {
+                        "traj": wandb.plot.line(
+                            wandb.Table(data=traj[i], columns=["t", "state"]),
+                            "t",
+                            "state",
+                        ),
+                    }
+                )
             for i in reversed(range(batch)):
                 if acceptance[i]:
                     self.accept_stdp(i)
