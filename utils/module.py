@@ -3,6 +3,7 @@ from turtle import forward, st
 import torch as th
 import torch.nn.functional as F
 from jaxtyping import UInt8, Float, Float64, Int, Bool
+import wandb
 
 
 class HMM(th.nn.Module):
@@ -11,6 +12,7 @@ class HMM(th.nn.Module):
         in_features: int,
         out_features: int,
         learning_rate: float = 1e-3,
+        populations: int = 2,
         sigma: int = 10,
         tau: float = 5.0,
         num_paths: int = 10,
@@ -21,6 +23,8 @@ class HMM(th.nn.Module):
         self.out_features = out_features
         "Number of output features"
         self.learning_rate = learning_rate
+        self.populations = populations
+        "Number of populations for population coding"
         self.sigma = sigma
         "Time window for membrane potential and STDP"
         self.tau = tau
@@ -28,6 +32,8 @@ class HMM(th.nn.Module):
         self.num_paths = num_paths
         "Number of paths to get the mean of the importance weights"
         self.ltp_constant = 1
+        self.inverse_lr_decay = 1
+        "To garantee the convergence of the algorithm"
 
         self.log_likelihood_afferent = th.nn.Parameter(
             th.rand(in_features, out_features) * -1 - 1, requires_grad=False
@@ -128,10 +134,15 @@ class HMM(th.nn.Module):
         )
 
     def accept_stdp(self, index: int) -> None:
-        self.log_likelihood_afferent += self.dw_afferent[index]
-        self.log_likelihood_lateral += self.dw_lateral[index]
-        self.log_prior += self.db[index]
+        self.log_likelihood_afferent += (
+            self.learning_rate * self.dw_afferent[index] / self.inverse_lr_decay
+        )
+        self.log_likelihood_lateral += (
+            self.learning_rate * self.dw_lateral[index] / self.inverse_lr_decay
+        )
+        self.log_prior += self.learning_rate * self.db[index] / self.inverse_lr_decay
 
+        self.inverse_lr_decay += 1
         self.normalize_probs()
 
     def forward(self, x: Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]):
@@ -211,19 +222,21 @@ class HMM(th.nn.Module):
 
             # Acceptance step
             acceptance = th.distributions.Bernoulli(
-                log_importance_weights.logit()
+                log_importance_weights.exp().clamp(max=1)
             ).sample()
-            if acceptance.sum() == batch:
-                break
-            else:
-                for i in reversed(range(batch)):
-                    if acceptance[i]:
-                        self.accept_stdp(i)
 
-                        x = x[:i]
-                        batch -= 1
-                    else:
-                        continue
+            exit_flag = True
+            for i in reversed(range(batch)):
+                if acceptance[i]:
+                    self.accept_stdp(i)
+
+                    x = x[:i]
+                    batch -= 1
+                else:
+                    exit_flag = False
+                    continue
+            if exit_flag:
+                break
 
     def normalize_probs(self) -> None:
         """Normalize over in_features, to satisfy the constraint that the sum of the probs to each output neuron is 1.
