@@ -10,16 +10,16 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm.auto import tqdm
 import wandb
 
-num_steps = 50
+num_steps = 15
 populations = 2
 num_epochs = 1
-batch_size = 32
+batch_size = 10
 num_workers = 4
 feature_map = [0, 3]
 # feature_map = [0, 3, 4]
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 out_features = len(feature_map)  # 10 classes default
-learning_rate = 1e0
+learning_rate = 1e-2
 device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
 
 wandb.init(
@@ -69,27 +69,24 @@ if __name__ == "__main__":
             target = target.to(device)
             pred = net(data)
             if i % 10 == 0:
-                for k in range(out_features):
-                    log_likelihood_k_afferent = net.log_likelihood_afferent[:, k]
-
-                    wandb.log(
-                        {
-                            f"p(x|s_{k}=1)": wandb.Image(
-                                decode_population(
-                                    log_likelihood_k_afferent.exp().view(
-                                        populations, 28, 28
-                                    )
-                                )
-                            ),
-                        }
-                    )
                 wandb.log(
                     {
+                        f"p(x|s_{k}=1)": wandb.Image(
+                            decode_population(
+                                net.log_likelihood_afferent[:, k]
+                                .exp()
+                                .view(populations, 28, 28)
+                            )
+                        )
+                        for k in range(out_features)
+                    }
+                    | {
+                        f"p(s_{k}=1)": net.log_prior[k].exp().item()
+                        for k in range(out_features)
+                    }
+                    | {
                         "p(s_{t}|s_{t-1}=1)": wandb.Image(
                             net.log_likelihood_lateral.exp()
-                        ),
-                        f"p(s)": wandb.Image(
-                            net.log_prior.exp().unsqueeze(-1),
-                        ),
+                        )
                     }
                 )

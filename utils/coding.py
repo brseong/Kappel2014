@@ -1,4 +1,5 @@
 import pdb
+from typing import Literal
 import torch as th
 from torchvision.transforms import ToTensor  # type: ignore
 from PIL.Image import Image
@@ -31,8 +32,31 @@ def poisson_spike_per_cls(
     return spikes.scatter_(dim=1, index=y_indices, src=_spikes)
 
 
+def temporal_spike_per_cls(
+    y_classes: UInt8[th.Tensor, "1 28 28"],
+    num_steps: int = 50,
+    population: int = 2,
+) -> UInt8[th.Tensor, "Num_steps Populations 28 28"]:
+    """Generate temporal spikes for each class in the input tensor. Only one class is active for the series of spikes.
+
+    Returns:
+        _type_: _description_
+    """
+    y_indices = y_classes.unsqueeze_(0).repeat(
+        num_steps, 1, 1, 1
+    )  # (t_steps, 1, 28, 28)
+    spikes = th.zeros(
+        (num_steps, population, *y_indices.shape[2:]), dtype=th.uint8
+    )  # (t_steps, Population, 28, 28)
+    raise NotImplementedError("Temporal spikes are not implemented yet.")
+    return spikes
+
+
 def encode_data(
-    x: Image | th.Tensor, num_steps: int = 50, population: int = 2
+    x: Image | th.Tensor,
+    num_steps: int = 50,
+    population: int = 2,
+    method: Literal["poisson", "temporal"] = "poisson",
 ) -> UInt8[th.Tensor, "Num_steps Populations 28 28"]:
     """Encode data into Poisson spikes, where each pixel is represented by a population of neurons.
 
@@ -46,7 +70,12 @@ def encode_data(
         x.floor_().clamp_(0, population - 1).to(dtype=th.int64)
     )  # Split the image into population parts: [0,...,population-1]
 
-    return poisson_spike_per_cls(x, num_steps=num_steps, population=population)
+    if method == "poisson":
+        return poisson_spike_per_cls(x, num_steps=num_steps, population=population)
+    elif method == "temporal":
+        return temporal_spike_per_cls(x, num_steps=num_steps, population=population)
+    else:
+        raise ValueError(f"Unknown method: {method}")
 
 
 def decode_population(

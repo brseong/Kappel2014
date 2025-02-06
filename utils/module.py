@@ -1,3 +1,4 @@
+from importlib.metadata import distribution
 from itertools import count
 import trace
 from turtle import forward, st
@@ -8,6 +9,7 @@ import wandb
 from tqdm.auto import tqdm
 
 counter = count(1)
+state_history = []
 
 
 class HMM(th.nn.Module):
@@ -189,7 +191,9 @@ class HMM(th.nn.Module):
                 dtype=th.int64,
             )  # (Batch, Paths, out_features)
 
-            log_importance_weights = th.zeros(batch, device=x.device, dtype=th.float64)
+            log_importance_weights = th.zeros(
+                batch, self.num_paths, device=x.device, dtype=th.float64
+            )
 
             # Compute p(x_m|s_{m-1}).
             # Transpos the log_likelihood_lateral, as it is left-to-right transform.
@@ -198,7 +202,6 @@ class HMM(th.nn.Module):
             ).log()  # (in_features, out_features)
             self.reset_trace(batch, x)
 
-            traj = [[] for _ in range(batch)]
             for t in range(num_steps):
                 x_t = x[:, t]
                 potentials = (
@@ -237,46 +240,41 @@ class HMM(th.nn.Module):
                             instantaneous_input_ll[i, j] = marginal_ll[x_t[i]][
                                 :, prev_state_candidates[i, j].int().argmax(dim=0)
                             ].sum()
-                instantaneous_input_ll = (
-                    instantaneous_input_ll[:, 0]
-                    - instantaneous_input_ll.logsumexp(dim=1)
-                    + th.log(th.tensor(self.num_paths))
-                )
                 log_importance_weights += instantaneous_input_ll
 
                 self.save_trace(x_t, prev_states, states)
 
                 for i in range(batch):
-                    traj[i].append([t, states[i].int().argmax().item()])
-
+                    state_history.append([t, states[i].int().argmax().item()])
                 prev_states = states
                 prev_state_candidates = state_candidates
 
             # Acceptance step
+            log_importance_weights += -log_importance_weights.logsumexp(
+                dim=1, keepdim=True
+            ) + th.log(th.tensor(self.num_paths))
+            # To get the trajectory with the highest importance weight, for sample efficiency.
             acceptance = th.distributions.Bernoulli(
-                log_importance_weights.exp().clamp(max=1)
+                log_importance_weights.max(dim=1).values.exp().clamp(max=1)
             ).sample()
 
             wandb.log(
                 {
                     "acceptance rate": acceptance.float().mean(),
                     "log importance weights": log_importance_weights.mean(),
+                    "state history": wandb.plot.line(
+                        wandb.Table(
+                            data=state_history,
+                            columns=["t", "state"],
+                        ),
+                        "t",
+                        "state",
+                    ),
                 }
             )
-            for i in range(batch):
-                wandb.log(
-                    {
-                        "traj": wandb.plot.line(
-                            wandb.Table(data=traj[i], columns=["t", "state"]),
-                            "t",
-                            "state",
-                        ),
-                    }
-                )
             for i in reversed(range(batch)):
                 if acceptance[i]:
                     self.accept_stdp(i)
-
                     batch -= 1
                 else:
                     continue
