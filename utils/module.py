@@ -185,8 +185,9 @@ class HMM(th.nn.Module):
             log_importance_weights = th.zeros(batch, device=x.device, dtype=th.float64)
 
             # Compute p(x_m|s_{m-1}).
+            # Transpos the log_likelihood_lateral, as it is left-to-right transform.
             marginal_ll = (
-                self.log_likelihood_afferent.exp() @ self.log_likelihood_lateral.exp()
+                self.log_likelihood_afferent.exp() @ self.log_likelihood_lateral.T.exp()
             ).log()  # (in_features, out_features)
             self.reset_trace(batch, x)
 
@@ -206,7 +207,10 @@ class HMM(th.nn.Module):
                 state_candidates = (
                     th.distributions.Categorical(posteriors).sample((self.num_paths,)).T
                 )  # (Batch, Paths)
-                assert state_candidates.shape == (batch, self.num_paths)
+                assert state_candidates.shape == (batch, self.num_paths), (
+                    state_candidates.shape,
+                    (batch, self.num_paths),
+                )
                 state_candidates = (
                     F.one_hot(state_candidates.flatten(), self.out_features)
                     .to(th.bool)
@@ -252,10 +256,10 @@ class HMM(th.nn.Module):
                 if acceptance[i]:
                     self.accept_stdp(i)
 
-                    x = x[:i]
                     batch -= 1
                 else:
                     continue
+            x = x[acceptance.bool().logical_not()]
             if batch == 0:
                 break
 
@@ -271,9 +275,9 @@ class HMM(th.nn.Module):
         self.log_likelihood_afferent = (
             population_form - population_form.logsumexp(dim=0, keepdim=True)
         ).view(*self.log_likelihood_afferent.shape)
-        self.log_prior.clamp_(min=-7, max=0)
         self.log_likelihood_lateral.clamp_(min=-7, max=0)
         self.log_likelihood_lateral -= self.log_likelihood_lateral.logsumexp(
             dim=1, keepdim=True
         )
+        self.log_prior.clamp_(min=-7, max=0)
         self.log_prior -= self.log_prior.logsumexp(dim=0)

@@ -93,6 +93,8 @@ if __name__ == "__main__":
                         "p(s_{t}|s_{t-1}=1)": wandb.Image(
                             net.log_likelihood_lateral.exp()
                         ),
-                        f"p(s)": net.log_prior.exp(),
+                        f"p(s)": wandb.Image(
+                            net.log_prior.exp().unsqueeze(-1),
+                        ),
                     }
                 )
