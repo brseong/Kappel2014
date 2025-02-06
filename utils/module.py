@@ -212,7 +212,7 @@ class HMM(th.nn.Module):
                     .to(th.bool)
                     .view(batch, self.num_paths, self.out_features)
                 )  # (Batch, Paths, out_features)
-                state = state_candidates[:, 0]  # (Batch, out_features)
+                states = state_candidates[:, 0]  # (Batch, out_features)
 
                 instantaneous_input_ll = th.zeros(
                     batch, self.num_paths, device=x.device, dtype=th.float64
@@ -231,9 +231,9 @@ class HMM(th.nn.Module):
                 )
                 log_importance_weights += instantaneous_input_ll
 
-                self.save_trace(x_t, prev_states, state)
+                self.save_trace(x_t, prev_states, states)
 
-                prev_states = state
+                prev_states = states
                 prev_state_candidates = state_candidates
 
             # Acceptance step
@@ -258,6 +258,8 @@ class HMM(th.nn.Module):
                     continue
             if batch == 0:
                 break
+
+        return states.int().argmax(dim=1)
 
     def normalize_probs(self) -> None:
         """Normalize over in_features, to satisfy the constraint that the sum of the probs to each output neuron is 1.
