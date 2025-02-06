@@ -24,7 +24,6 @@ class HMM(th.nn.Module):
         in_features: int,
         out_features: int,
         learning_rate: float = 1e-3,
-        populations: int = 2,
         sigma: int = 10,
         tau: float = 5.0,
         num_paths: int = 10,
@@ -36,8 +35,6 @@ class HMM(th.nn.Module):
         self.out_features = out_features
         "Number of output features"
         self.learning_rate = learning_rate
-        self.populations = populations
-        "Number of populations for population coding"
         self.sigma = sigma
         "Time window for membrane potential and STDP"
         self.tau = tau

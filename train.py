@@ -3,7 +3,6 @@ import pdb
 import torch as th
 from utils.Nessler2009 import Nessler2009
 from utils.coding import encode_data, decode_population
-from utils.module import HMM
 from jaxtyping import UInt8
 from torchvision.datasets import MNIST
 from torch.utils.data import Dataset, DataLoader
@@ -23,7 +22,7 @@ learning_rate = 1e0
 device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
 
 wandb.init(
-    project="kappel2014",
+    project="nessler2009",
     config={
         "num_steps": num_steps,
         "population": populations,
@@ -49,9 +48,9 @@ if __name__ == "__main__":
         data_test, batch_size=batch_size, shuffle=False, num_workers=num_workers
     )
 
-    net = HMM(28 * 28 * populations, out_features, learning_rate, populations).to(
-        device
-    )
+    net = Nessler2009(
+        28 * 28 * populations, out_features, learning_rate, populations
+    ).to(device)
     wandb.watch(net)  # type: ignore
 
     ewma = 0.5  # To inspect the clustering of the likelihoods
@@ -74,25 +73,25 @@ if __name__ == "__main__":
                 )
                 wandb.log({"target-pred": ewma})
             if i % 10 == 0:
+                # wandb.log(
+                #     {
+                #         f"img": wandb.Image(
+                #             decode_population(
+                #                 data[0].sum(dim=0).view(populations, 28, 28)
+                #             )
+                #         ),
+                #     }
+                # )
                 for k in range(out_features):
-                    log_likelihood_k_afferent = net.log_likelihood_afferent[:, k]
+                    log_likelihood_k = net.log_likelihood[:, k]
 
                     wandb.log(
                         {
-                            f"p(x|s_{k}=1)": wandb.Image(
+                            f"p(y|z_{k}=1)": wandb.Image(
                                 decode_population(
-                                    log_likelihood_k_afferent.exp().view(
-                                        populations, 28, 28
-                                    )
+                                    log_likelihood_k.exp().view(populations, 28, 28)
                                 )
                             ),
+                            f"p(z_{k}=1)": net.log_prior[k].exp(),
                         }
                     )
-                wandb.log(
-                    {
-                        "p(s_{t}|s_{t-1}=1)": wandb.Image(
-                            net.log_likelihood_lateral.exp()
-                        ),
-                        f"p(s)": net.log_prior.exp(),
-                    }
-                )
