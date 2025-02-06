@@ -1,9 +1,13 @@
+from itertools import count
 import trace
 from turtle import forward, st
 import torch as th
 import torch.nn.functional as F
 from jaxtyping import UInt8, Float, Float64, Int, Bool
 import wandb
+from tqdm.auto import tqdm
+
+counter = count(1)
 
 
 class HMM(th.nn.Module):
@@ -163,7 +167,7 @@ class HMM(th.nn.Module):
         batch, num_steps, in_features = x.shape
 
         # Begin rejection sampling
-        while True:
+        for trial in tqdm(counter):
             potentials = th.zeros(batch, self.out_features, device=x.device)
 
             # The "0" state is the initial state: s_0.
@@ -217,8 +221,8 @@ class HMM(th.nn.Module):
                     for i in range(batch):
                         for j in range(self.num_paths):
                             # Compute the sum of the log likelihoods of the input spikes given the latent states.
-                            instantaneous_input_ll[i][j] = marginal_ll[x_t[i]][
-                                :, prev_state_candidates[i, j].argmax(dim=0)
+                            instantaneous_input_ll[i, j] = marginal_ll[x_t[i]][
+                                :, prev_state_candidates[i, j].int().argmax(dim=0)
                             ].sum()
                 instantaneous_input_ll = (
                     instantaneous_input_ll[:, 0]
@@ -237,7 +241,13 @@ class HMM(th.nn.Module):
                 log_importance_weights.exp().clamp(max=1)
             ).sample()
 
-            exit_flag = True
+            wandb.log(
+                {
+                    "acceptance rate": acceptance.float().mean(),
+                    "log importance weights": log_importance_weights.mean(),
+                }
+            )
+
             for i in reversed(range(batch)):
                 if acceptance[i]:
                     self.accept_stdp(i)
@@ -245,9 +255,8 @@ class HMM(th.nn.Module):
                     x = x[:i]
                     batch -= 1
                 else:
-                    exit_flag = False
                     continue
-            if exit_flag:
+            if batch == 0:
                 break
 
     def normalize_probs(self) -> None:
@@ -262,10 +271,7 @@ class HMM(th.nn.Module):
         ).view(*self.log_likelihood_afferent.shape)
         self.log_prior.clamp_(min=-7, max=0)
         self.log_likelihood_lateral.clamp_(min=-7, max=0)
-        population_form = self.log_likelihood_lateral.view(
-            self.populations, -1, self.out_features
+        self.log_likelihood_lateral -= self.log_likelihood_lateral.logsumexp(
+            dim=1, keepdim=True
         )
-        self.log_likelihood_lateral = (
-            population_form - population_form.logsumexp(dim=0, keepdim=True)
-        ).view(*self.log_likelihood_lateral.shape)
         self.log_prior -= self.log_prior.logsumexp(dim=0)
