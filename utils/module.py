@@ -216,9 +216,9 @@ class HMM(th.nn.Module):
                 states = th.distributions.Categorical(
                     posteriors
                 ).sample()  # (Batch * Paths)
-                states = F.one_hot(states, self.out_features).to(
-                    th.bool
-                )  # (Batch * Paths, out_features)
+                states = F.one_hot(
+                    states, self.out_features
+                ).bool()  # (Batch * Paths, out_features)
 
                 if t != 0:
                     instantaneous_input_ll = th.zeros(
@@ -240,12 +240,10 @@ class HMM(th.nn.Module):
 
             # Acceptance step
             # Normalize the importance weights
-            log_importance_weights = (
-                log_importance_weights[:: self.num_paths]
-                - log_importance_weights.view(batch, self.num_paths).logsumexp(
-                    dim=1, keepdim=False
-                )
-                + th.log(th.tensor(self.num_paths))
+            log_importance_weights = log_importance_weights[
+                :: self.num_paths
+            ] - log_importance_weights.view(batch, self.num_paths).logsumexp(
+                dim=1, keepdim=False
             )
             acceptance = th.distributions.Bernoulli(
                 log_importance_weights.exp().clamp(max=1)

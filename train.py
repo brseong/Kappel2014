@@ -10,8 +10,8 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm.auto import tqdm
 import wandb
 
-num_steps = 15
-populations = 2
+num_steps = 50
+populations = 3
 num_epochs = 1
 batch_size = 10
 num_workers = 4
