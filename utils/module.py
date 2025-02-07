@@ -110,8 +110,30 @@ class HMM(th.nn.Module):
         lateral_current: Bool[th.Tensor, "Batch out_features"],
     ):
         ##############################################
+        # Save the afferent stdp
+        pre_post_afferent = ((-self.log_likelihood_afferent).exp() - 1) * (
+            self.trace_pre_afferent.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
+        )
+        post_pre_afferent = afferent.double().unsqueeze(2) @ (
+            self.trace_post + lateral_current.double()
+        ).unsqueeze(1)
+        self.dw_afferent += pre_post_afferent  # - post_pre_afferent
+        ##############################################
+        # Save the lateral stdp
+        pre_post_lateral = ((-self.log_likelihood_lateral).exp() - 1) * (
+            self.trace_pre_lateral.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
+        )
+        post_pre_lateral = lateral_prev.double().unsqueeze(2) @ (
+            self.trace_post + lateral_current.double()
+        ).unsqueeze(1)
+        self.dw_lateral += pre_post_lateral  # - post_pre_lateral
+        ##############################################
+        # Save the prior stdp
+        self.db += (-self.log_prior).exp() * lateral_current.double() - (
+            1  # - lateral_current.double()
+        )
+        ##############################################
         # Update the traces
-        # self.trace_table.append(self.trace_pre_afferent[0, 0].item())
         self.trace_pre_afferent += (
             -self.trace_pre_afferent / self.tau + afferent.double()
         )
@@ -121,37 +143,12 @@ class HMM(th.nn.Module):
         self.trace_post += -self.trace_post / self.tau + lateral_current.double()
 
         ##############################################
-        # Save the afferent stdp
-        pre_post_afferent = (-self.log_likelihood_afferent).exp() * (
-            self.trace_pre_afferent.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
-        ) - 1
-        post_pre_afferent = afferent.double().unsqueeze(2) @ self.trace_post.unsqueeze(
-            1
-        )
-        self.dw_afferent += pre_post_afferent - post_pre_afferent
-        ##############################################
-        # Save the lateral stdp
-        pre_post_lateral = (-self.log_likelihood_lateral).exp() * (
-            self.trace_pre_lateral.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
-        ) - 1
-        post_pre_lateral = lateral_prev.double().unsqueeze(
-            2
-        ) @ self.trace_post.unsqueeze(1)
-        self.dw_lateral += pre_post_lateral - post_pre_lateral
-        ##############################################
-        # Save the prior stdp
-        self.db += (-self.log_prior).exp() * lateral_current.double() - (
-            1  # - lateral_current.double()
-        )
 
     def accept_stdp(self, index: int) -> None:
-        self.log_likelihood_afferent += (
-            self.learning_rate * self.dw_afferent[index] / self.inverse_lr_decay
-        )
-        self.log_likelihood_lateral += (
-            self.learning_rate * self.dw_lateral[index] / self.inverse_lr_decay
-        )
-        # self.log_prior += self.learning_rate * self.db[index] / self.inverse_lr_decay
+        lr = self.learning_rate / self.inverse_lr_decay
+        self.log_likelihood_afferent += lr * self.dw_afferent[index]
+        self.log_likelihood_lateral += lr * self.dw_lateral[index]
+        # self.log_prior += lr * self.db[index]
 
         self.inverse_lr_decay += 1
         self.normalize_probs()
@@ -168,7 +165,6 @@ class HMM(th.nn.Module):
             sample_count = batch * self.num_paths
             potentials = th.zeros(sample_count, self.out_features, device=x.device)
 
-            # The "0" state is the initial state: s_0.
             prev_states = th.zeros(
                 sample_count, self.out_features, device=x.device, dtype=th.bool
             )  # (Batch * Paths, out_features).

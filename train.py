@@ -24,7 +24,7 @@ learning_rate = 1e-1
 tau = 10
 refractory_period = 5
 num_paths = 4
-device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
+device = th.device("cuda:1" if th.cuda.is_available() else "cpu")
 
 wandb.init(
     project="kappel2014",
@@ -82,7 +82,7 @@ if __name__ == "__main__":
             data = data.view(data.shape[0], num_steps, -1).to(device)
             target = target.to(device)
             pred = net(data)
-            if i % 10 == 0:
+            if i % 1 == 0:
                 wandb.log(
                     {
                         f"p(x|s_{k}=1)": wandb.Image(
