@@ -56,6 +56,7 @@ class HMM(th.nn.Module):
         log_likelihood_lateral = (
             th.rand(out_features, out_features, dtype=dtype) * -1 - 1
         )
+        # log_likelihood_lateral[range(out_features), range(out_features)] = -th.inf
 
         log_prior = th.ones(out_features, dtype=dtype) * -1
         self.register_buffer("log_likelihood_afferent", log_likelihood_afferent)
@@ -64,9 +65,9 @@ class HMM(th.nn.Module):
 
         self.normalize_probs()
 
-        self.trace_pre_afferent: Float64[th.Tensor, "Batch in_features"]
+        self.trace_afferent: Float64[th.Tensor, "Batch in_features"]
         """Float64[th.Tensor, "Batch in_features"]"""
-        self.trace_pre_lateral: Float64[th.Tensor, "Batch out_features"]
+        self.trace_lateral: Float64[th.Tensor, "Batch out_features"]
         """Float64[th.Tensor, "Batch out_features"]"""
         self.trace_post: Float64[th.Tensor, "Batch out_features"]
         """Float64[th.Tensor, "Batch out_features"]"""
@@ -78,10 +79,10 @@ class HMM(th.nn.Module):
         """Float64[th.Tensor, "Batch out_features"]"""
 
     def reset_trace(self, batch: int, x: th.Tensor) -> None:
-        self.trace_pre_afferent = th.zeros(
+        self.trace_afferent = th.zeros(
             (batch, self.in_features), dtype=th.float64, device=x.device
         )
-        self.trace_pre_lateral = th.zeros(
+        self.trace_lateral = th.zeros(
             (batch, self.out_features), dtype=th.float64, device=x.device
         )
         self.trace_post = th.zeros(
@@ -112,35 +113,30 @@ class HMM(th.nn.Module):
         ##############################################
         # Save the afferent stdp
         pre_post_afferent = ((-self.log_likelihood_afferent).exp() - 1) * (
-            self.trace_pre_afferent.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
+            self.trace_afferent.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
         )
         post_pre_afferent = afferent.double().unsqueeze(2) @ (
-            self.trace_post + lateral_current.double()
+            self.trace_lateral + lateral_current.double()
         ).unsqueeze(1)
         self.dw_afferent += pre_post_afferent  # - post_pre_afferent
         ##############################################
         # Save the lateral stdp
         pre_post_lateral = ((-self.log_likelihood_lateral).exp() - 1) * (
-            self.trace_pre_lateral.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
+            self.trace_lateral.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
         )
         post_pre_lateral = lateral_prev.double().unsqueeze(2) @ (
-            self.trace_post + lateral_current.double()
+            self.trace_lateral + lateral_current.double()
         ).unsqueeze(1)
         self.dw_lateral += pre_post_lateral  # - post_pre_lateral
         ##############################################
         # Save the prior stdp
-        self.db += (-self.log_prior).exp() * lateral_current.double() - (
-            1  # - lateral_current.double()
-        )
+        self.db += (1 / self.out_features - 1) * lateral_current.double() - (
+            1 - lateral_current.double()
+        ) / self.out_features
         ##############################################
         # Update the traces
-        self.trace_pre_afferent += (
-            -self.trace_pre_afferent / self.tau + afferent.double()
-        )
-        self.trace_pre_lateral += (
-            -self.trace_pre_lateral / self.tau + lateral_prev.double()
-        )
-        self.trace_post += -self.trace_post / self.tau + lateral_current.double()
+        self.trace_afferent += -self.trace_afferent / self.tau + afferent.double()
+        self.trace_lateral += -self.trace_lateral / self.tau + lateral_current.double()
 
         ##############################################
 
@@ -148,7 +144,7 @@ class HMM(th.nn.Module):
         lr = self.learning_rate / self.inverse_lr_decay
         self.log_likelihood_afferent += lr * self.dw_afferent[index]
         self.log_likelihood_lateral += lr * self.dw_lateral[index]
-        # self.log_prior += lr * self.db[index]
+        self.log_prior += self.learning_rate * self.db[index]
 
         self.inverse_lr_decay += 1
         self.normalize_probs()
@@ -186,7 +182,7 @@ class HMM(th.nn.Module):
                 )  # (Batch * Paths, in_features)
                 wandb.log(
                     {
-                        f"potentials/{k}": potentials[0, k]
+                        f"lateral/potentials_{k}": potentials[0, k]
                         for k in range(self.out_features)
                     }
                 )
@@ -195,7 +191,7 @@ class HMM(th.nn.Module):
                     + x_t.double() @ self.log_likelihood_afferent
                     + prev_states.double() @ self.log_likelihood_lateral
                     + self.log_prior
-                    # - prev_states.double() * 10
+                    # - prev_states.double() * self.refractory_period
                 )  # (Batch * Paths, out_features)
 
                 posteriors = potentials.softmax(dim=1)  # (Batch * Paths, out_features)
@@ -203,12 +199,18 @@ class HMM(th.nn.Module):
                 Assume that there is always exactly one spike at each time step, following discussed circuit homeostasis in the paper.
                 Sample latent states multiple times to estimate the mean of importance weights.
                 """
-                states = th.distributions.Categorical(
+                states = th.distributions.Bernoulli(
                     posteriors
-                ).sample()  # (Batch * Paths)
-                states = F.one_hot(
-                    states, self.out_features
-                ).bool()  # (Batch * Paths, out_features)
+                ).sample()  # (Batch * Paths, out_features)
+                # states = F.one_hot(
+                #     states, self.out_features
+                # ).bool()  # (Batch * Paths, out_features)
+                wandb.log(
+                    {
+                        f"lateral/spikes_{k}": states.sum(dim=0)[k]
+                        for k in range(self.out_features)
+                    }
+                )
 
                 if t != 0:
                     instantaneous_input_ll = th.zeros(
@@ -216,15 +218,20 @@ class HMM(th.nn.Module):
                     )
                     for i in range(sample_count):
                         # Compute the sum of the log likelihoods of the input spikes given the latent states.
-                        instantaneous_input_ll[i] = marginal_ll[x_t[i]][
-                            :, prev_states[i].int().argmax(dim=0)
-                        ].sum()
+                        instantaneous_input_ll[i] = (
+                            x_t[i].double().unsqueeze(0) @ marginal_ll @ prev_states[i]
+                        )
+                        # instantaneous_input_ll[i] = marginal_ll[x_t[i]][
+                        #     :, prev_states[i].int().argmax(dim=0)
+                        # ].sum()
                     log_importance_weights += instantaneous_input_ll
 
                 self.save_trace(x_t, prev_states, states)
 
                 for i in range(sample_count):
-                    state_history.append([t, states[i].int().argmax().item()])
+                    for j in range(self.out_features):
+                        if states[i, j]:
+                            state_history.append([t, states[i, j].int().item()])
 
                 prev_states = states
 
@@ -264,7 +271,7 @@ class HMM(th.nn.Module):
             if batch == 0:
                 break
             x = x[acceptance.bool().logical_not()]
-        return states.int().argmax(dim=1)
+        return states
 
     def normalize_probs(self) -> None:
         """Normalize over in_features, to satisfy the constraint that the sum of the probs to each output neuron is 1.

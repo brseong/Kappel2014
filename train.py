@@ -1,3 +1,4 @@
+from ast import arg
 from functools import partial
 import pdb
 import torch as th
@@ -9,22 +10,37 @@ from torchvision.datasets import MNIST
 from torch.utils.data import Dataset, DataLoader
 from tqdm.auto import tqdm
 import wandb
+import argparse
 
-num_steps = 50
-populations = 2
-num_epochs = 1
-batch_size = 10
-num_workers = 4
-feature_map = [0, 3]
+parser = argparse.ArgumentParser()
+parser.add_argument("--num_steps", type=int, default=50)
+parser.add_argument("--population", type=int, default=2)
+parser.add_argument("--num_epochs", type=int, default=1)
+parser.add_argument("--batch_size", type=int, default=10)
+parser.add_argument("--num_workers", type=int, default=4)
+parser.add_argument("--feature_map", type=int, nargs="+", default=[0, 3])
+parser.add_argument("--learning_rate", type=float, default=1e-1)
+parser.add_argument("--tau", type=int, default=10)
+parser.add_argument("--refractory_period", type=int, default=5)
+parser.add_argument("--num_paths", type=int, default=4)
+args = parser.parse_args()
+
+
+num_steps = args.num_steps
+populations = args.population
+num_epochs = args.num_epochs
+batch_size = args.batch_size
+num_workers = args.num_workers
+feature_map = args.feature_map
 # feature_map = [0, 3, 4]
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+learning_rate = args.learning_rate
+tau = args.tau
+refractory_period = args.refractory_period
+num_paths = args.num_paths
 in_features = 28 * 28 * populations
 out_features = len(feature_map)  # 10 classes default
-learning_rate = 1e-1
-tau = 10
-refractory_period = 5
-num_paths = 4
-device = th.device("cuda:1" if th.cuda.is_available() else "cpu")
+device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
 
 wandb.init(
     project="kappel2014",
