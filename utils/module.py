@@ -27,8 +27,8 @@ class HMM(th.nn.Module):
         out_features: int,
         learning_rate: float = 1e-3,
         populations: int = 2,
-        sigma: int = 10,
-        tau: float = 5.0,
+        tau: float = 10.0,
+        refractory_period: int = 5,
         num_paths: int = 10,
         dtype: th.dtype = th.float64,
     ) -> None:
@@ -40,10 +40,10 @@ class HMM(th.nn.Module):
         self.learning_rate = learning_rate
         self.populations = populations
         "Number of populations for population coding"
-        self.sigma = sigma
-        "Time window for membrane potential and STDP"
         self.tau = tau
         "Time constant for the membrane potential"
+        self.refractory_period = 5
+        "Refractory period for the membrane potential"
         self.num_paths = num_paths
         "Number of paths to get the mean of the importance weights"
         self.ltp_constant = 1
@@ -56,6 +56,7 @@ class HMM(th.nn.Module):
         log_likelihood_lateral = (
             th.rand(out_features, out_features, dtype=dtype) * -1 - 1
         )
+
         log_prior = th.ones(out_features, dtype=dtype) * -1
         self.register_buffer("log_likelihood_afferent", log_likelihood_afferent)
         self.register_buffer("log_likelihood_lateral", log_likelihood_lateral)
@@ -127,7 +128,7 @@ class HMM(th.nn.Module):
         post_pre_afferent = afferent.double().unsqueeze(2) @ self.trace_post.unsqueeze(
             1
         )
-        self.dw_afferent += pre_post_afferent  # - post_pre_afferent
+        self.dw_afferent += pre_post_afferent - post_pre_afferent
         ##############################################
         # Save the lateral stdp
         pre_post_lateral = (-self.log_likelihood_lateral).exp() * (
@@ -136,12 +137,12 @@ class HMM(th.nn.Module):
         post_pre_lateral = lateral_prev.double().unsqueeze(
             2
         ) @ self.trace_post.unsqueeze(1)
-        self.dw_lateral += pre_post_lateral  # - post_pre_lateral
+        self.dw_lateral += pre_post_lateral - post_pre_lateral
         ##############################################
         # Save the prior stdp
-        # self.db += (-self.log_prior).exp() * lateral_current.double() - (
-        #     1  # - lateral_current.double()
-        # )
+        self.db += (-self.log_prior).exp() * lateral_current.double() - (
+            1  # - lateral_current.double()
+        )
 
     def accept_stdp(self, index: int) -> None:
         self.log_likelihood_afferent += (
@@ -150,21 +151,7 @@ class HMM(th.nn.Module):
         self.log_likelihood_lateral += (
             self.learning_rate * self.dw_lateral[index] / self.inverse_lr_decay
         )
-        self.log_prior += self.learning_rate * self.db[index] / self.inverse_lr_decay
-
-        # data = [*zip(range(len(self.trace_table)), self.trace_table)]
-        # wandb.log(
-        #     {
-        #         "trace": wandb.plot.line(
-        #             wandb.Table(
-        #                 data=data,
-        #                 columns=["t", "trace"],
-        #             ),
-        #             "t",
-        #             "trace",
-        #         ),
-        #     }
-        # )
+        # self.log_prior += self.learning_rate * self.db[index] / self.inverse_lr_decay
 
         self.inverse_lr_decay += 1
         self.normalize_probs()
@@ -201,11 +188,18 @@ class HMM(th.nn.Module):
                 x_t = x[:, t].repeat_interleave(
                     self.num_paths, dim=0
                 )  # (Batch * Paths, in_features)
+                wandb.log(
+                    {
+                        f"potentials/{k}": potentials[0, k]
+                        for k in range(self.out_features)
+                    }
+                )
                 potentials = (
                     potentials * (1 - 1 / self.tau)
                     + x_t.double() @ self.log_likelihood_afferent
                     + prev_states.double() @ self.log_likelihood_lateral
                     + self.log_prior
+                    # - prev_states.double() * 10
                 )  # (Batch * Paths, out_features)
 
                 posteriors = potentials.softmax(dim=1)  # (Batch * Paths, out_features)

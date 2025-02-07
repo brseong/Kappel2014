@@ -11,15 +11,19 @@ from tqdm.auto import tqdm
 import wandb
 
 num_steps = 50
-populations = 3
+populations = 2
 num_epochs = 1
 batch_size = 10
 num_workers = 4
 feature_map = [0, 3]
 # feature_map = [0, 3, 4]
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+in_features = 28 * 28 * populations
 out_features = len(feature_map)  # 10 classes default
 learning_rate = 1e-1
+tau = 10
+refractory_period = 5
+num_paths = 4
 device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
 
 wandb.init(
@@ -30,8 +34,12 @@ wandb.init(
         "num_epochs": num_epochs,
         "batch_size": batch_size,
         "num_workers": num_workers,
+        "in_features": in_features,
         "out_features": out_features,
         "learning_rate": learning_rate,
+        "tau": tau,
+        "refractory_period": refractory_period,
+        "num_paths": num_paths,
     },
 )
 
@@ -49,9 +57,15 @@ if __name__ == "__main__":
         data_test, batch_size=batch_size, shuffle=False, num_workers=num_workers
     )
 
-    net = HMM(28 * 28 * populations, out_features, learning_rate, populations).to(
-        device
-    )
+    net = HMM(
+        in_features,
+        out_features,
+        learning_rate,
+        populations,
+        tau,
+        refractory_period,
+        num_paths,
+    ).to(device)
     wandb.watch(net)  # type: ignore
 
     ewma = 0.5  # To inspect the clustering of the likelihoods
