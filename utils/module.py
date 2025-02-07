@@ -1,5 +1,6 @@
 from importlib.metadata import distribution
 from itertools import count
+from math import log
 import trace
 from turtle import forward, st
 import torch as th
@@ -55,7 +56,7 @@ class HMM(th.nn.Module):
         log_likelihood_lateral = (
             th.rand(out_features, out_features, dtype=dtype) * -1 - 1
         )
-        log_prior = th.rand(out_features, dtype=dtype) * -1 - 1
+        log_prior = th.ones(out_features, dtype=dtype) * -1
         self.register_buffer("log_likelihood_afferent", log_likelihood_afferent)
         self.register_buffer("log_likelihood_lateral", log_likelihood_lateral)
         self.register_buffer("log_prior", log_prior)
@@ -126,7 +127,7 @@ class HMM(th.nn.Module):
         post_pre_afferent = afferent.double().unsqueeze(2) @ self.trace_post.unsqueeze(
             1
         )
-        self.dw_afferent += pre_post_afferent - post_pre_afferent
+        self.dw_afferent += pre_post_afferent  # - post_pre_afferent
         ##############################################
         # Save the lateral stdp
         pre_post_lateral = (-self.log_likelihood_lateral).exp() * (
@@ -135,12 +136,12 @@ class HMM(th.nn.Module):
         post_pre_lateral = lateral_prev.double().unsqueeze(
             2
         ) @ self.trace_post.unsqueeze(1)
-        self.dw_lateral += pre_post_lateral - post_pre_lateral
+        self.dw_lateral += pre_post_lateral  # - post_pre_lateral
         ##############################################
         # Save the prior stdp
-        self.db += (-self.log_prior).exp() * lateral_current.double() - (
-            1 - lateral_current.double()
-        )
+        # self.db += (-self.log_prior).exp() * lateral_current.double() - (
+        #     1  # - lateral_current.double()
+        # )
 
     def accept_stdp(self, index: int) -> None:
         self.log_likelihood_afferent += (
@@ -177,22 +178,16 @@ class HMM(th.nn.Module):
 
         # Begin rejection sampling
         for trial in tqdm(counter, leave=False):
-            potentials = th.zeros(batch, self.out_features, device=x.device)
+            sample_count = batch * self.num_paths
+            potentials = th.zeros(sample_count, self.out_features, device=x.device)
 
             # The "0" state is the initial state: s_0.
-            prev_states = F.one_hot(
-                th.zeros(batch, device=x.device, dtype=th.int64), self.out_features
-            ).to(th.bool)  # (Batch, out_features).
-            prev_state_candidates = th.zeros(
-                batch,
-                self.num_paths,
-                self.out_features,
-                device=x.device,
-                dtype=th.int64,
-            )  # (Batch, Paths, out_features)
+            prev_states = th.zeros(
+                sample_count, self.out_features, device=x.device, dtype=th.bool
+            )  # (Batch * Paths, out_features).
 
             log_importance_weights = th.zeros(
-                batch, self.num_paths, device=x.device, dtype=th.float64
+                sample_count, device=x.device, dtype=th.float64
             )
 
             # Compute p(x_m|s_{m-1}).
@@ -200,68 +195,67 @@ class HMM(th.nn.Module):
             marginal_ll = (
                 self.log_likelihood_afferent.exp() @ self.log_likelihood_lateral.T.exp()
             ).log()  # (in_features, out_features)
-            self.reset_trace(batch, x)
+            self.reset_trace(sample_count, x)
 
             for t in range(num_steps):
-                x_t = x[:, t]
+                x_t = x[:, t].repeat_interleave(
+                    self.num_paths, dim=0
+                )  # (Batch * Paths, in_features)
                 potentials = (
                     potentials * (1 - 1 / self.tau)
                     + x_t.double() @ self.log_likelihood_afferent
                     + prev_states.double() @ self.log_likelihood_lateral
                     + self.log_prior
-                )
+                )  # (Batch * Paths, out_features)
 
-                posteriors = potentials.softmax(dim=1)
+                posteriors = potentials.softmax(dim=1)  # (Batch * Paths, out_features)
                 """
                 Assume that there is always exactly one spike at each time step, following discussed circuit homeostasis in the paper.
                 Sample latent states multiple times to estimate the mean of importance weights.
                 """
-                state_candidates = (
-                    th.distributions.Categorical(posteriors).sample((self.num_paths,)).T
-                )  # (Batch, Paths)
-                assert state_candidates.shape == (batch, self.num_paths), (
-                    state_candidates.shape,
-                    (batch, self.num_paths),
-                )
-                state_candidates = (
-                    F.one_hot(state_candidates.flatten(), self.out_features)
-                    .to(th.bool)
-                    .view(batch, self.num_paths, self.out_features)
-                )  # (Batch, Paths, out_features)
-                states = state_candidates[:, 0]  # (Batch, out_features)
+                states = th.distributions.Categorical(
+                    posteriors
+                ).sample()  # (Batch * Paths)
+                states = F.one_hot(states, self.out_features).to(
+                    th.bool
+                )  # (Batch * Paths, out_features)
 
-                instantaneous_input_ll = th.zeros(
-                    batch, self.num_paths, device=x.device, dtype=th.float64
-                )
                 if t != 0:
-                    for i in range(batch):
-                        for j in range(self.num_paths):
-                            # Compute the sum of the log likelihoods of the input spikes given the latent states.
-                            instantaneous_input_ll[i, j] = marginal_ll[x_t[i]][
-                                :, prev_state_candidates[i, j].int().argmax(dim=0)
-                            ].sum()
-                log_importance_weights += instantaneous_input_ll
+                    instantaneous_input_ll = th.zeros(
+                        sample_count, device=x.device, dtype=th.float64
+                    )
+                    for i in range(sample_count):
+                        # Compute the sum of the log likelihoods of the input spikes given the latent states.
+                        instantaneous_input_ll[i] = marginal_ll[x_t[i]][
+                            :, prev_states[i].int().argmax(dim=0)
+                        ].sum()
+                    log_importance_weights += instantaneous_input_ll
 
                 self.save_trace(x_t, prev_states, states)
 
-                for i in range(batch):
+                for i in range(sample_count):
                     state_history.append([t, states[i].int().argmax().item()])
+
                 prev_states = states
-                prev_state_candidates = state_candidates
 
             # Acceptance step
-            log_importance_weights += -log_importance_weights.logsumexp(
-                dim=1, keepdim=True
-            ) + th.log(th.tensor(self.num_paths))
-            # To get the trajectory with the highest importance weight, for sample efficiency.
+            # Normalize the importance weights
+            log_importance_weights = (
+                log_importance_weights[:: self.num_paths]
+                - log_importance_weights.view(batch, self.num_paths).logsumexp(
+                    dim=1, keepdim=False
+                )
+                + th.log(th.tensor(self.num_paths))
+            )
             acceptance = th.distributions.Bernoulli(
-                log_importance_weights.max(dim=1).values.exp().clamp(max=1)
+                log_importance_weights.exp().clamp(max=1)
             ).sample()
 
             wandb.log(
                 {
-                    "acceptance rate": acceptance.float().mean(),
-                    "log importance weights": log_importance_weights.mean(),
+                    "rejection sampling/batch size": batch,
+                    "rejection sampling/acceptance": acceptance.sum(),
+                    "rejection sampling/log importance weights": log_importance_weights.mean(),
                     "state history": wandb.plot.line(
                         wandb.Table(
                             data=state_history,
@@ -270,18 +264,18 @@ class HMM(th.nn.Module):
                         "t",
                         "state",
                     ),
-                }
+                },
             )
-            for i in reversed(range(batch)):
+            for i in range(batch):
                 if acceptance[i]:
-                    self.accept_stdp(i)
+                    self.accept_stdp(i * self.num_paths)
                     batch -= 1
                 else:
                     continue
-            x = x[acceptance.bool().logical_not()]
+
             if batch == 0:
                 break
-
+            x = x[acceptance.bool().logical_not()]
         return states.int().argmax(dim=1)
 
     def normalize_probs(self) -> None:
