@@ -1,10 +1,13 @@
+import enum
 from importlib.metadata import distribution
 from itertools import count
 from math import log
+import pdb
 import trace
 from turtle import forward, st
 import torch as th
 import torch.nn.functional as F
+from torch.distributions import Bernoulli
 from jaxtyping import UInt8, Float, Float64, Int, Bool
 import wandb
 from tqdm.auto import tqdm
@@ -118,7 +121,7 @@ class HMM(th.nn.Module):
         post_pre_afferent = afferent.double().unsqueeze(2) @ (
             self.trace_lateral + lateral_current.double()
         ).unsqueeze(1)
-        self.dw_afferent += pre_post_afferent  # - post_pre_afferent
+        self.dw_afferent += pre_post_afferent - post_pre_afferent
         ##############################################
         # Save the lateral stdp
         pre_post_lateral = ((-self.log_likelihood_lateral).exp() - 1) * (
@@ -127,11 +130,11 @@ class HMM(th.nn.Module):
         post_pre_lateral = lateral_prev.double().unsqueeze(2) @ (
             self.trace_lateral + lateral_current.double()
         ).unsqueeze(1)
-        self.dw_lateral += pre_post_lateral  # - post_pre_lateral
+        self.dw_lateral += pre_post_lateral - post_pre_lateral
         ##############################################
         # Save the prior stdp
-        self.db += (1 / self.out_features - 1) * lateral_current.double() - (
-            1 - lateral_current.double()
+        self.db += (1 / self.out_features - 1) * lateral_current.double() + (
+            lateral_current.logical_not().double()
         ) / self.out_features
         ##############################################
         # Update the traces
@@ -141,10 +144,10 @@ class HMM(th.nn.Module):
         ##############################################
 
     def accept_stdp(self, index: int) -> None:
-        lr = self.learning_rate / self.inverse_lr_decay
-        self.log_likelihood_afferent += lr * self.dw_afferent[index]
-        self.log_likelihood_lateral += lr * self.dw_lateral[index]
-        self.log_prior += self.learning_rate * self.db[index]
+        scaled_lr = self.learning_rate / self.inverse_lr_decay
+        self.log_likelihood_afferent += scaled_lr * self.dw_afferent[index]
+        # self.log_likelihood_lateral += scaled_lr * self.dw_lateral[index]
+        self.log_prior += scaled_lr + self.db[index]
 
         self.inverse_lr_decay += 1
         self.normalize_probs()
@@ -199,9 +202,7 @@ class HMM(th.nn.Module):
                 Assume that there is always exactly one spike at each time step, following discussed circuit homeostasis in the paper.
                 Sample latent states multiple times to estimate the mean of importance weights.
                 """
-                states = th.distributions.Bernoulli(
-                    posteriors
-                ).sample()  # (Batch * Paths, out_features)
+                states = Bernoulli(posteriors).sample()  # (Batch * Paths, out_features)
                 # states = F.one_hot(
                 #     states, self.out_features
                 # ).bool()  # (Batch * Paths, out_features)
@@ -242,9 +243,7 @@ class HMM(th.nn.Module):
             ] - log_importance_weights.view(batch, self.num_paths).logsumexp(
                 dim=1, keepdim=False
             )
-            acceptance = th.distributions.Bernoulli(
-                log_importance_weights.exp().clamp(max=1)
-            ).sample()
+            acceptance = Bernoulli(log_importance_weights.exp().clamp(max=1)).sample()
 
             wandb.log(
                 {

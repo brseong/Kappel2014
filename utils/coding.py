@@ -3,7 +3,7 @@ from typing import Literal
 import torch as th
 from torchvision.transforms import ToTensor  # type: ignore
 from PIL.Image import Image
-from jaxtyping import Float, UInt8, Int
+from jaxtyping import Float, UInt8, Int, Bool
 
 to_tensor = ToTensor()
 
@@ -13,7 +13,7 @@ def poisson_spike_per_cls(
     num_steps: int = 50,
     prob: float = 4e-2,
     population: int = 2,
-) -> UInt8[th.Tensor, "Num_steps Populations 28 28"]:
+) -> Bool[th.Tensor, "Num_steps Populations 28 28"]:
     """Generate Poisson spikes for each class in the input tensor. Only one class is active for the series of spikes.
 
     Returns:
@@ -24,19 +24,19 @@ def poisson_spike_per_cls(
     )  # (t_steps, 1, 28, 28)
     poisson = th.distributions.poisson.Poisson(rate=prob)
     spikes = th.zeros(
-        (num_steps, population, *y_indices.shape[2:]), dtype=th.uint8
+        (num_steps, population, *y_indices.shape[2:])
     )  # (t_steps, Population, 28, 28)
-    _spikes = poisson.sample((num_steps, 1, *y_indices.shape[2:])).to(
-        th.uint8
+    _spikes = poisson.sample(
+        (num_steps, 1, *y_indices.shape[2:])
     )  # (t_steps, 1, 28, 28)
-    return spikes.scatter_(dim=1, index=y_indices, src=_spikes)
+    return spikes.scatter_(dim=1, index=y_indices, src=_spikes).bool()
 
 
 def temporal_spike_per_cls(
     y_classes: UInt8[th.Tensor, "1 28 28"],
     num_steps: int = 50,
     population: int = 2,
-) -> UInt8[th.Tensor, "Num_steps Populations 28 28"]:
+) -> Bool[th.Tensor, "Num_steps Populations 28 28"]:
     """Generate temporal spikes for each class in the input tensor. Only one class is active for the series of spikes.
 
     Returns:
@@ -46,10 +46,10 @@ def temporal_spike_per_cls(
         num_steps, 1, 1, 1
     )  # (t_steps, 1, 28, 28)
     spikes = th.zeros(
-        (num_steps, population, *y_indices.shape[2:]), dtype=th.uint8
+        (num_steps, population, *y_indices.shape[2:])
     )  # (t_steps, Population, 28, 28)
     raise NotImplementedError("Temporal spikes are not implemented yet.")
-    return spikes
+    return spikes.bool()
 
 
 def encode_data(
@@ -57,7 +57,7 @@ def encode_data(
     num_steps: int = 50,
     population: int = 2,
     method: Literal["poisson", "temporal"] = "poisson",
-) -> UInt8[th.Tensor, "Num_steps Populations 28 28"]:
+) -> Bool[th.Tensor, "Num_steps Populations 28 28"]:
     """Encode data into Poisson spikes, where each pixel is represented by a population of neurons.
 
     Returns:
@@ -79,7 +79,7 @@ def encode_data(
 
 
 def decode_population(
-    x: UInt8[th.Tensor, "Populations 28 28"],
+    x: Bool[th.Tensor, "Populations 28 28"],
 ) -> Float[th.Tensor, "28 28"]:
     """Integrate the population of each group to make a single value of pixel intensity.
 
