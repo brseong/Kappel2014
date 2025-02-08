@@ -121,7 +121,7 @@ class HMM(th.nn.Module):
         post_pre_afferent = afferent.double().unsqueeze(2) @ (
             self.trace_lateral + lateral_current.double()
         ).unsqueeze(1)
-        self.dw_afferent += pre_post_afferent - post_pre_afferent
+        self.dw_afferent += pre_post_afferent  # - post_pre_afferent
         ##############################################
         # Save the lateral stdp
         pre_post_lateral = ((-self.log_likelihood_lateral).exp() - 1) * (
@@ -130,7 +130,7 @@ class HMM(th.nn.Module):
         post_pre_lateral = lateral_prev.double().unsqueeze(2) @ (
             self.trace_lateral + lateral_current.double()
         ).unsqueeze(1)
-        self.dw_lateral += pre_post_lateral - post_pre_lateral
+        self.dw_lateral += pre_post_lateral  # - post_pre_lateral
         ##############################################
         # Save the prior stdp
         self.db += (1 / self.out_features - 1) * lateral_current.double() + (
@@ -146,7 +146,7 @@ class HMM(th.nn.Module):
     def accept_stdp(self, index: int) -> None:
         scaled_lr = self.learning_rate / self.inverse_lr_decay
         self.log_likelihood_afferent += scaled_lr * self.dw_afferent[index]
-        # self.log_likelihood_lateral += scaled_lr * self.dw_lateral[index]
+        self.log_likelihood_lateral += scaled_lr * self.dw_lateral[index]
         self.log_prior += scaled_lr + self.db[index]
 
         self.inverse_lr_decay += 1
@@ -286,5 +286,5 @@ class HMM(th.nn.Module):
         self.log_likelihood_lateral -= self.log_likelihood_lateral.logsumexp(
             dim=1, keepdim=True
         )
-        self.log_prior.clamp_(min=-7, max=0)
-        self.log_prior -= self.log_prior.logsumexp(dim=0)
+        # self.log_prior.clamp_(min=-7, max=0)
+        # self.log_prior -= self.log_prior.logsumexp(dim=0)
