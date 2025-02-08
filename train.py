@@ -39,7 +39,7 @@ tau = args.tau
 refractory_period = args.refractory_period
 num_paths = args.num_paths
 in_features = 28 * 28 * populations
-out_features = len(feature_map)  # 10 classes default
+out_features = len(feature_map) * refractory_period  # 10 classes default
 device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
 
 wandb.init(

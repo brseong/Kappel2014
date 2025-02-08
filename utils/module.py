@@ -191,10 +191,11 @@ class HMM(th.nn.Module):
                 )
                 potentials = (
                     potentials * (1 - 1 / self.tau)
-                    + x_t.double() @ self.log_likelihood_afferent
-                    + prev_states.double() @ self.log_likelihood_lateral
+                    + x_t.double() @ (1 - self.log_likelihood_afferent.exp()).log()
+                    + prev_states.double()
+                    @ (1 - self.log_likelihood_lateral.exp()).log()
                     + self.log_prior
-                    # - prev_states.double() * self.refractory_period
+                    - prev_states.double() * th.exp(th.tensor(self.refractory_period))
                 )  # (Batch * Paths, out_features)
 
                 posteriors = potentials.softmax(dim=1)  # (Batch * Paths, out_features)
@@ -203,9 +204,6 @@ class HMM(th.nn.Module):
                 Sample latent states multiple times to estimate the mean of importance weights.
                 """
                 states = Bernoulli(posteriors).sample()  # (Batch * Paths, out_features)
-                # states = F.one_hot(
-                #     states, self.out_features
-                # ).bool()  # (Batch * Paths, out_features)
                 wandb.log(
                     {
                         f"lateral/spikes_{k}": states.sum(dim=0)[k]
@@ -232,7 +230,7 @@ class HMM(th.nn.Module):
                 for i in range(sample_count):
                     for j in range(self.out_features):
                         if states[i, j]:
-                            state_history.append([t, states[i, j].int().item()])
+                            state_history.append([j])
 
                 prev_states = states
 
@@ -250,14 +248,19 @@ class HMM(th.nn.Module):
                     "rejection sampling/batch size": batch,
                     "rejection sampling/acceptance": acceptance.sum(),
                     "rejection sampling/log importance weights": log_importance_weights.mean(),
-                    "state history": wandb.plot.line(
-                        wandb.Table(
-                            data=state_history,
-                            columns=["t", "state"],
-                        ),
-                        "t",
-                        "state",
+                    "state distribution": wandb.plot.histogram(
+                        wandb.Table(columns=["state"], data=state_history),
+                        value="state",
+                        title="State distribution",
                     ),
+                    # "state history": wandb.plot.line(
+                    #     wandb.Table(
+                    #         data=state_history,
+                    #         columns=["t", "state"],
+                    #     ),
+                    #     "t",
+                    #     "state",
+                    # ),
                 },
             )
             for i in range(batch):
@@ -286,5 +289,5 @@ class HMM(th.nn.Module):
         self.log_likelihood_lateral -= self.log_likelihood_lateral.logsumexp(
             dim=1, keepdim=True
         )
-        # self.log_prior.clamp_(min=-7, max=0)
-        # self.log_prior -= self.log_prior.logsumexp(dim=0)
+        self.log_prior.clamp_(min=-7, max=0)
+        self.log_prior -= self.log_prior.logsumexp(dim=0)
