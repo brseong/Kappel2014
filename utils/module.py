@@ -84,29 +84,27 @@ class HMM(th.nn.Module):
         self.db: Float64[th.Tensor, "Batch out_features"]
         """Float64[th.Tensor, "Batch out_features"]"""
 
-    def reset_trace(self, batch: int, x: th.Tensor) -> None:
+    def reset_trace(self, batch: int, device: th.device) -> None:
         self.trace_afferent = th.zeros(
-            (batch, self.in_features), dtype=th.float64, device=x.device
+            (batch, self.in_features), dtype=th.float64, device=device
         )
         self.trace_lateral = th.zeros(
-            (batch, self.out_features), dtype=th.float64, device=x.device
+            (batch, self.out_features), dtype=th.float64, device=device
         )
         self.trace_post = th.zeros(
-            (batch, self.out_features), dtype=th.float64, device=x.device
+            (batch, self.out_features), dtype=th.float64, device=device
         )
         self.dw_afferent = th.zeros(
             (batch, self.in_features, self.out_features),
             dtype=th.float64,
-            device=x.device,
+            device=device,
         )
         self.dw_lateral = th.zeros(
             (batch, self.out_features, self.out_features),
             dtype=th.float64,
-            device=x.device,
+            device=device,
         )
-        self.db = th.zeros(
-            (batch, self.out_features), dtype=th.float64, device=x.device
-        )
+        self.db = th.zeros((batch, self.out_features), dtype=th.float64, device=device)
 
     # trace_table = []
 
@@ -118,18 +116,18 @@ class HMM(th.nn.Module):
     ):
         ##############################################
         # Save the afferent stdp
-        pre_post_afferent = ((-self.log_likelihood_afferent).exp()) * (
+        pre_post_afferent = (-self.log_likelihood_afferent).exp() * (
             self.trace_afferent.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
-        )
+        ) - 1
         # post_pre_afferent = afferent.double().unsqueeze(2) @ (
-        #     self.trace_lateral + lateral_current.double()
+        #     self.trace_lateral * (1 - 1 / self.tau) + lateral_current.double()
         # ).unsqueeze(1)
         self.dw_afferent += pre_post_afferent  # - post_pre_afferent
         ##############################################
         # Save the lateral stdp
-        pre_post_lateral = ((-self.log_likelihood_lateral).exp() - 1) * (
+        pre_post_lateral = (-self.log_likelihood_lateral).exp() * (
             self.trace_lateral.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
-        )
+        ) - 1
         # post_pre_lateral = lateral_prev.double().unsqueeze(2) @ (
         #     self.trace_lateral + lateral_current.double()
         # ).unsqueeze(1)
@@ -176,27 +174,36 @@ class HMM(th.nn.Module):
             "Input shape must be (Batch, Num_steps, Num_Population*28*28)"
         )
         x = x.bool()
+        device = x.device
         batch_size, num_steps, in_features = x.shape
 
         # Begin rejection sampling
-        for trial in tqdm(counter, leave=False):
+        for trial in tqdm(counter, leave=False, desc="Rejection sampling trials"):
             sample_count = batch_size * self.num_paths
-            potentials = th.zeros(sample_count, self.out_features, device=x.device)
+            potentials = th.zeros(sample_count, self.out_features, device=device)
 
             prev_states = th.zeros(
-                sample_count, self.out_features, device=x.device, dtype=th.bool
+                sample_count,
+                self.out_features,
+                device=device,
+                dtype=th.bool,
             )  # (Batch * Paths, out_features).
 
+            refractory_remains = th.zeros_like(potentials, device=device, dtype=th.int)
+
             log_importance_weights = th.zeros(
-                sample_count, device=x.device, dtype=th.float64
+                sample_count, device=device, dtype=th.float64
             )
 
-            # Compute p(x_m|s_{m-1}).
-            # Transpos the log_likelihood_lateral, as it is left-to-right transform.
+            # Compute p((x_m)_i|(s_{m-1})_j), where marginal_ll[i, j] = p((x_m)_i|(s_{m-1})_j).
+            # Transpose the log_likelihood_lateral, as it is left-to-right transform.
+            # I.e. it calculates all the paths of prev_state -> current_state -> affarent.
             marginal_ll = (
-                self.log_likelihood_afferent.exp() @ self.log_likelihood_lateral.T.exp()
+                self.log_likelihood_afferent.exp().mm(
+                    self.log_likelihood_lateral.T.exp()
+                )
             ).log()  # (in_features, out_features)
-            self.reset_trace(sample_count, x)
+            self.reset_trace(sample_count, device)
 
             for t in range(num_steps):
                 x_t = x[:, t].repeat_interleave(
@@ -211,22 +218,21 @@ class HMM(th.nn.Module):
                 potentials = (
                     potentials * (1 - 1 / self.tau)
                     + x_t.double() @ self.log_likelihood_afferent
-                    + prev_states.double()
-                    @ (
-                        self.log_likelihood_lateral
-                        - 7
-                        * th.eye(self.out_features, device=x.device, dtype=th.float64)
-                    )
+                    # +p_t @ self.log_likelihood_afferent
+                    + prev_states.double() @ self.log_likelihood_lateral
                     + self.log_prior
-                    - prev_states.double() * th.tensor(self.refractory_period).exp()
                 )  # (Batch * Paths, out_features)
 
-                posteriors = potentials.softmax(dim=1)  # (Batch * Paths, out_features)
+                neg_energy = potentials.where(refractory_remains == 0, -th.inf)
+                posteriors = neg_energy.softmax(dim=1)  # (Batch * Paths, out_features)
                 """
                 Assume that there is always exactly one spike at each time step, following discussed circuit homeostasis in the paper.
                 Sample latent states multiple times to estimate the mean of importance weights.
                 """
                 states = Bernoulli(posteriors).sample()  # (Batch * Paths, out_features)
+                refractory_remains = (
+                    refractory_remains - 1 + states * self.refractory_period
+                ).clamp(min=0)
                 wandb.log(
                     {
                         f"lateral/spikes_{k}": states.sum(dim=0)[k]
@@ -236,7 +242,7 @@ class HMM(th.nn.Module):
 
                 if t != 0:
                     instantaneous_input_ll = th.zeros(
-                        sample_count, device=x.device, dtype=th.float64
+                        sample_count, device=device, dtype=th.float64
                     )
                     for i in range(sample_count):
                         # Compute the sum of the log likelihoods of the input spikes given the latent states.
@@ -279,6 +285,7 @@ class HMM(th.nn.Module):
                 },
             )
             for i in range(batch_size):
+                # acceptance[i] = 1
                 if acceptance[i]:
                     self.accept_stdp(i * self.num_paths)
                     batch_size -= 1
@@ -293,12 +300,16 @@ class HMM(th.nn.Module):
     def forward_gen(
         self, batch_size: int
     ) -> Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]:
-        states = th.ones(
-            batch_size,
-            self.out_features,
-            dtype=th.bool,
-            device=self.log_likelihood_afferent.device,
-        )  # (Batch * Paths, out_features).
+        # hidden_states = th.zeros(
+        #     batch_size,
+        #     self.out_features,
+        #     dtype=th.bool,
+        #     device=self.log_likelihood_afferent.device,
+        # )  # (Batch * Paths, out_features).
+        hidden_states = Categorical(self.log_prior.softmax(dim=0)).sample((batch_size,))
+        hidden_states = F.one_hot(
+            hidden_states, self.out_features
+        ).bool()  # (Batch, out_features)
 
         x = th.zeros(
             batch_size,
@@ -310,17 +321,21 @@ class HMM(th.nn.Module):
 
         for t in range(self.num_steps - 1, -1, -1):
             state_distribution = (
-                self.log_likelihood_lateral.exp() @ states.T.double()
-            ).T  # (Batch, out_features)
-
-            states = Categorical(state_distribution).sample()  # (Batch)
+                self.log_likelihood_lateral.exp() @ hidden_states.T.double()
+            ).T.log()  # (Batch, out_features)
+            state_distribution += self.log_prior
+            hidden_states = Categorical(
+                state_distribution.softmax(dim=1)
+            ).sample()  # (Batch)
 
             x[:, t, :] = (
-                Bernoulli(self.log_likelihood_afferent[:, states].exp()).sample().T
+                Bernoulli(self.log_likelihood_afferent[:, hidden_states].exp())
+                .sample()
+                .T
             )  # (Batch, in_features)
 
-            states = F.one_hot(
-                states, self.out_features
+            hidden_states = F.one_hot(
+                hidden_states, self.out_features
             ).bool()  # (Batch, out_features)
 
         return x
