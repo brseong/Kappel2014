@@ -118,9 +118,9 @@ class HMM(th.nn.Module):
     ):
         ##############################################
         # Save the afferent stdp
-        pre_post_afferent = ((-self.log_likelihood_afferent).exp() - 1) * (
+        pre_post_afferent = ((-self.log_likelihood_afferent).exp()) * (
             self.trace_afferent.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
-        ) - 1
+        )
         # post_pre_afferent = afferent.double().unsqueeze(2) @ (
         #     self.trace_lateral + lateral_current.double()
         # ).unsqueeze(1)
@@ -129,7 +129,7 @@ class HMM(th.nn.Module):
         # Save the lateral stdp
         pre_post_lateral = ((-self.log_likelihood_lateral).exp() - 1) * (
             self.trace_lateral.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
-        ) - 1
+        )
         # post_pre_lateral = lateral_prev.double().unsqueeze(2) @ (
         #     self.trace_lateral + lateral_current.double()
         # ).unsqueeze(1)
@@ -167,9 +167,9 @@ class HMM(th.nn.Module):
         for t in range(self.num_steps):
             epsp = x[:, t].double()  # (Batch, Num_Population*28*28)
             for tp in range(t, self.num_steps):
-                x_new[:, t] += epsp
-                epsp = epsp * (1 - 1 / self.tau)
-        return
+                x_new[:, tp] += epsp
+                epsp *= 1 - 1 / self.tau
+        return x_new
 
     def forward_train(self, x: Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]):
         assert len(x.shape) == 3, (
@@ -354,4 +354,13 @@ class HMM(th.nn.Module):
 
 
 if __name__ == "__main__":
+    import wandb
+
+    wandb.init(mode="offline")
     hmm = HMM(784 * 2, 10)
+    x = th.Tensor(
+        [[1, 0], [0, 1], [0, 0], [0, 0], [1, 0], [0, 0], [0, 1]] + [[0, 0]] * 43
+    ).unsqueeze(0)
+    print(x.shape)
+    print(hmm.to_epsp(x))
+    pdb.set_trace()
