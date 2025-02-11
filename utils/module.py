@@ -7,7 +7,7 @@ import trace
 from turtle import forward, st
 import torch as th
 import torch.nn.functional as F
-from torch.distributions import Bernoulli
+from torch.distributions import Bernoulli, Categorical
 from jaxtyping import UInt8, Float, Float64, Int, Bool
 import wandb
 from tqdm.auto import tqdm
@@ -28,11 +28,12 @@ class HMM(th.nn.Module):
         self,
         in_features: int,
         out_features: int,
-        learning_rate: float = 1e-3,
+        learning_rate: float = 1e-1,
         populations: int = 2,
         tau: float = 10.0,
         refractory_period: int = 5,
         num_paths: int = 10,
+        num_steps: int = 50,
         dtype: th.dtype = th.float64,
     ) -> None:
         super(HMM, self).__init__()
@@ -45,11 +46,14 @@ class HMM(th.nn.Module):
         "Number of populations for population coding"
         self.tau = tau
         "Time constant for the membrane potential"
-        self.refractory_period = 5
+        self.refractory_period = refractory_period
         "Refractory period for the membrane potential"
         self.num_paths = num_paths
         "Number of paths to get the mean of the importance weights"
-        self.ltp_constant = 1
+        self.num_steps = num_steps
+        "Number of time steps"
+        self.ltp_constant = 7
+        "Constant for the LTP rule"
         self.inverse_lr_decay = 1
         "To garantee the convergence of the algorithm"
 
@@ -59,7 +63,6 @@ class HMM(th.nn.Module):
         log_likelihood_lateral = (
             th.rand(out_features, out_features, dtype=dtype) * -1 - 1
         )
-        # log_likelihood_lateral[range(out_features), range(out_features)] = -th.inf
 
         log_prior = th.ones(out_features, dtype=dtype) * -1
         self.register_buffer("log_likelihood_afferent", log_likelihood_afferent)
@@ -117,19 +120,19 @@ class HMM(th.nn.Module):
         # Save the afferent stdp
         pre_post_afferent = ((-self.log_likelihood_afferent).exp() - 1) * (
             self.trace_afferent.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
-        )
-        post_pre_afferent = afferent.double().unsqueeze(2) @ (
-            self.trace_lateral + lateral_current.double()
-        ).unsqueeze(1)
+        ) - 1
+        # post_pre_afferent = afferent.double().unsqueeze(2) @ (
+        #     self.trace_lateral + lateral_current.double()
+        # ).unsqueeze(1)
         self.dw_afferent += pre_post_afferent  # - post_pre_afferent
         ##############################################
         # Save the lateral stdp
         pre_post_lateral = ((-self.log_likelihood_lateral).exp() - 1) * (
             self.trace_lateral.unsqueeze(2) @ lateral_current.double().unsqueeze(1)
-        )
-        post_pre_lateral = lateral_prev.double().unsqueeze(2) @ (
-            self.trace_lateral + lateral_current.double()
-        ).unsqueeze(1)
+        ) - 1
+        # post_pre_lateral = lateral_prev.double().unsqueeze(2) @ (
+        #     self.trace_lateral + lateral_current.double()
+        # ).unsqueeze(1)
         self.dw_lateral += pre_post_lateral  # - post_pre_lateral
         ##############################################
         # Save the prior stdp
@@ -152,16 +155,32 @@ class HMM(th.nn.Module):
         self.inverse_lr_decay += 1
         self.normalize_probs()
 
-    def forward(self, x: Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]):
+        wandb.log(
+            {
+                f"lateral_sum_{i}": k
+                for i, k in enumerate(self.log_likelihood_lateral.exp().sum(dim=0))
+            }
+        )
+
+    def to_epsp(self, x: Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]):
+        x_new = th.zeros_like(x, dtype=th.float64, device=x.device)
+        for t in range(self.num_steps):
+            epsp = x[:, t].double()  # (Batch, Num_Population*28*28)
+            for tp in range(t, self.num_steps):
+                x_new[:, t] += epsp
+                epsp = epsp * (1 - 1 / self.tau)
+        return
+
+    def forward_train(self, x: Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]):
         assert len(x.shape) == 3, (
             "Input shape must be (Batch, Num_steps, Num_Population*28*28)"
         )
         x = x.bool()
-        batch, num_steps, in_features = x.shape
+        batch_size, num_steps, in_features = x.shape
 
         # Begin rejection sampling
         for trial in tqdm(counter, leave=False):
-            sample_count = batch * self.num_paths
+            sample_count = batch_size * self.num_paths
             potentials = th.zeros(sample_count, self.out_features, device=x.device)
 
             prev_states = th.zeros(
@@ -191,11 +210,15 @@ class HMM(th.nn.Module):
                 )
                 potentials = (
                     potentials * (1 - 1 / self.tau)
-                    + x_t.double() @ (1 - self.log_likelihood_afferent.exp()).log()
+                    + x_t.double() @ self.log_likelihood_afferent
                     + prev_states.double()
-                    @ (1 - self.log_likelihood_lateral.exp()).log()
+                    @ (
+                        self.log_likelihood_lateral
+                        - 7
+                        * th.eye(self.out_features, device=x.device, dtype=th.float64)
+                    )
                     + self.log_prior
-                    - prev_states.double() * th.exp(th.tensor(self.refractory_period))
+                    - prev_states.double() * th.tensor(self.refractory_period).exp()
                 )  # (Batch * Paths, out_features)
 
                 posteriors = potentials.softmax(dim=1)  # (Batch * Paths, out_features)
@@ -238,14 +261,14 @@ class HMM(th.nn.Module):
             # Normalize the importance weights
             log_importance_weights = log_importance_weights[
                 :: self.num_paths
-            ] - log_importance_weights.view(batch, self.num_paths).logsumexp(
+            ] - log_importance_weights.view(batch_size, self.num_paths).logsumexp(
                 dim=1, keepdim=False
             )
             acceptance = Bernoulli(log_importance_weights.exp().clamp(max=1)).sample()
 
             wandb.log(
                 {
-                    "rejection sampling/batch size": batch,
+                    "rejection sampling/batch size": batch_size,
                     "rejection sampling/acceptance": acceptance.sum(),
                     "rejection sampling/log importance weights": log_importance_weights.mean(),
                     "state distribution": wandb.plot.histogram(
@@ -253,41 +276,82 @@ class HMM(th.nn.Module):
                         value="state",
                         title="State distribution",
                     ),
-                    # "state history": wandb.plot.line(
-                    #     wandb.Table(
-                    #         data=state_history,
-                    #         columns=["t", "state"],
-                    #     ),
-                    #     "t",
-                    #     "state",
-                    # ),
                 },
             )
-            for i in range(batch):
+            for i in range(batch_size):
                 if acceptance[i]:
                     self.accept_stdp(i * self.num_paths)
-                    batch -= 1
+                    batch_size -= 1
                 else:
                     continue
 
-            if batch == 0:
+            if batch_size == 0:
                 break
             x = x[acceptance.bool().logical_not()]
         return states
 
+    def forward_gen(
+        self, batch_size: int
+    ) -> Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]:
+        states = th.ones(
+            batch_size,
+            self.out_features,
+            dtype=th.bool,
+            device=self.log_likelihood_afferent.device,
+        )  # (Batch * Paths, out_features).
+
+        x = th.zeros(
+            batch_size,
+            self.num_steps,
+            self.in_features,
+            dtype=th.bool,
+            device=self.log_likelihood_afferent.device,
+        )
+
+        for t in range(self.num_steps - 1, -1, -1):
+            state_distribution = (
+                self.log_likelihood_lateral.exp() @ states.T.double()
+            ).T  # (Batch, out_features)
+
+            states = Categorical(state_distribution).sample()  # (Batch)
+
+            x[:, t, :] = (
+                Bernoulli(self.log_likelihood_afferent[:, states].exp()).sample().T
+            )  # (Batch, in_features)
+
+            states = F.one_hot(
+                states, self.out_features
+            ).bool()  # (Batch, out_features)
+
+        return x
+
+    def forward(
+        self,
+        x: Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"] | None = None,
+        batch_size: int = 1,
+    ):
+        if x is not None:
+            return self.forward_train(x)
+        else:
+            return self.forward_gen(batch_size)
+
     def normalize_probs(self) -> None:
         """Normalize over in_features, to satisfy the constraint that the sum of the probs to each output neuron is 1.
         (the weights is log prob of the input spike given the latent variable)"""
-        self.log_likelihood_afferent.clamp_(min=-7, max=0)
+        self.log_likelihood_afferent.clamp_(min=-self.ltp_constant, max=0)
         population_form = self.log_likelihood_afferent.view(
             self.populations, -1, self.out_features
         )
         self.log_likelihood_afferent = (
             population_form - population_form.logsumexp(dim=0, keepdim=True)
         ).view(*self.log_likelihood_afferent.shape)
-        self.log_likelihood_lateral.clamp_(min=-7, max=0)
+        self.log_likelihood_lateral.clamp_(min=-self.ltp_constant, max=0)
         self.log_likelihood_lateral -= self.log_likelihood_lateral.logsumexp(
             dim=1, keepdim=True
         )
-        self.log_prior.clamp_(min=-7, max=0)
+        self.log_prior.clamp_(min=-self.ltp_constant, max=0)
         self.log_prior -= self.log_prior.logsumexp(dim=0)
+
+
+if __name__ == "__main__":
+    hmm = HMM(784 * 2, 10)

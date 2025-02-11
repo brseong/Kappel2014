@@ -20,8 +20,8 @@ parser.add_argument("--batch_size", type=int, default=10)
 parser.add_argument("--num_workers", type=int, default=4)
 parser.add_argument("--feature_map", type=int, nargs="+", default=[0, 3])
 parser.add_argument("--learning_rate", type=float, default=1e-1)
-parser.add_argument("--tau", type=int, default=10)
-parser.add_argument("--refractory_period", type=int, default=5)
+parser.add_argument("--tau", type=int, default=6)
+parser.add_argument("--refractory_period", type=int, default=3)
 parser.add_argument("--num_paths", type=int, default=4)
 args = parser.parse_args()
 
@@ -101,22 +101,32 @@ if __name__ == "__main__":
             if i % 1 == 0:
                 wandb.log(
                     {
-                        f"p(x|s_{k}=1)": wandb.Image(
-                            decode_population(
-                                net.log_likelihood_afferent[:, k]
-                                .exp()
-                                .view(populations, 28, 28)
-                            )
-                        )
-                        for k in range(out_features)
-                    }
-                    | {
+                        #     f"p(x|s_{k}=1)": wandb.Image(
+                        #         decode_population(
+                        #             net.log_likelihood_afferent[:, k]
+                        #             .exp()
+                        #             .view(populations, 28, 28)
+                        #         )
+                        #     )
+                        #     for k in range(out_features)
+                        # }
+                        # | {
                         f"p(s_{k}=1)": net.log_prior[k].exp().item()
                         for k in range(out_features)
                     }
                     | {
                         "p(s_{t}|s_{t-1}=1)": wandb.Image(
                             net.log_likelihood_lateral.exp()
+                        )
+                    }
+                    | {
+                        "generated": wandb.Image(
+                            decode_population(
+                                net(batch_size=1)
+                                .float()
+                                .mean(dim=1)
+                                .view(populations, 28, 28)
+                            )
                         )
                     }
                 )
