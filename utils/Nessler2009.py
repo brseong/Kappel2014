@@ -152,14 +152,6 @@ class Nessler2009(Module):
             self.trace_post_2sigma2inf[:, t, :]
         ).double().unsqueeze(1)
 
-        # print(
-        #     self.log_likelihood.shape,
-        #     pre_post_ltp.sum(dim=0).shape,
-        #     pre_post_ltd.sum(dim=0).shape,
-        #     post_pre_spk.sum(dim=0).shape,
-        #     post_pre_no_spk.sum(dim=0).shape,
-        # )
-
         dw = (
             (
                 (self.ltp_constant * (-self.log_likelihood).exp() - 1)

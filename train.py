@@ -19,7 +19,8 @@ parser.add_argument("--batch_size", type=int, default=10)
 parser.add_argument("--num_workers", type=int, default=4)
 parser.add_argument("--feature_map", type=int, nargs="+", default=[0, 3])
 parser.add_argument("--learning_rate", type=float, default=1e-1)
-parser.add_argument("--tau", type=int, default=10)
+parser.add_argument("--tau", type=int, default=15)
+parser.add_argument("--stdp_window", type=int, default=10)
 parser.add_argument("--refractory_period", type=int, default=3)
 parser.add_argument("--num_paths", type=int, default=4)
 args = parser.parse_args()
@@ -35,11 +36,12 @@ feature_map = args.feature_map
 # feature_map = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 learning_rate = args.learning_rate
 tau = args.tau
+stdp_window = args.stdp_window
 refractory_period = args.refractory_period
 num_paths = args.num_paths
 in_features = 28 * 28 * populations
-out_features = len(feature_map) * 10  # 10 classes default
-device = th.device("cuda:0" if th.cuda.is_available() else "cpu")
+out_features = len(feature_map) * 4  # 10 classes default
+device = th.device("cuda:3" if th.cuda.is_available() else "cpu")
 
 wandb.init(
     project="kappel2014",
@@ -78,6 +80,7 @@ if __name__ == "__main__":
         learning_rate,
         populations,
         tau,
+        stdp_window,
         refractory_period,
         num_paths,
     ).to(device)
@@ -100,17 +103,17 @@ if __name__ == "__main__":
             if i % 1 == 0:
                 wandb.log(
                     {
-                        #     f"p(x|s_{k}=1)": wandb.Image(
-                        #         decode_population(
-                        #             net.log_likelihood_afferent[:, k]
-                        #             .exp()
-                        #             .view(populations, 28, 28)
-                        #         )
-                        #     )
-                        #     for k in range(out_features)
-                        # }
-                        # | {
-                        f"p(s_{k}=1)": net.log_prior[k].exp().item()
+                        f"p(x|s_{k}=1)": wandb.Image(
+                            decode_population(
+                                net.log_likelihood_afferent[:, k]
+                                .exp()
+                                .view(populations, 28, 28)
+                            )
+                        )
+                        for k in range(out_features)
+                    }
+                    | {
+                        f"p(s_{k}=1)": net.log_prior[k].item()
                         for k in range(out_features)
                     }
                     | {
