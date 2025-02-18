@@ -12,17 +12,18 @@ import wandb
 import argparse
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--num_steps", type=int, default=50)
+parser.add_argument("--num_steps", type=int, default=100)
 parser.add_argument("--population", type=int, default=2)
 parser.add_argument("--num_epochs", type=int, default=1)
 parser.add_argument("--batch_size", type=int, default=10)
 parser.add_argument("--num_workers", type=int, default=4)
 parser.add_argument("--feature_map", type=int, nargs="+", default=[0, 3])
-parser.add_argument("--learning_rate", type=float, default=1e-1)
-parser.add_argument("--tau", type=int, default=15)
-parser.add_argument("--stdp_window", type=int, default=10)
-parser.add_argument("--refractory_period", type=int, default=3)
+parser.add_argument("--learning_rate", type=float, default=5e-3)
+parser.add_argument("--tau", type=int, default=2)
+parser.add_argument("--stdp_window", type=int, default=2)
+parser.add_argument("--refractory_period", type=int, default=1)
 parser.add_argument("--num_paths", type=int, default=4)
+parser.add_argument("--target_rate", type=int, default=4)
 args = parser.parse_args()
 
 
@@ -39,8 +40,9 @@ tau = args.tau
 stdp_window = args.stdp_window
 refractory_period = args.refractory_period
 num_paths = args.num_paths
+target_rate = args.target_rate
 in_features = 28 * 28 * populations
-out_features = len(feature_map) * 4  # 10 classes default
+out_features = 1 + len(feature_map) * 4  # 10 classes default. one for start state.
 device = th.device("cuda:3" if th.cuda.is_available() else "cpu")
 
 wandb.init(
@@ -57,6 +59,9 @@ wandb.init(
         "tau": tau,
         "refractory_period": refractory_period,
         "num_paths": num_paths,
+        "stdp_window": stdp_window,
+        "feature_map": feature_map,
+        "target_rate": target_rate,
     },
 )
 
@@ -64,7 +69,12 @@ SpikeLoader = DataLoader[Dataset[UInt8[th.Tensor, "Timesteps Population 28 28"]]
 
 if __name__ == "__main__":
     th.no_grad()
-    encode_data = partial(encode_data, num_steps=num_steps, population=populations)
+    encode_data = partial(
+        encode_data,
+        num_steps=num_steps,
+        population=populations,
+        prob=target_rate / num_steps,
+    )
     data_train = MNIST(".", download=True, train=True, transform=encode_data)
     data_test = MNIST(".", download=True, train=False, transform=encode_data)
     train_loader = SpikeLoader(

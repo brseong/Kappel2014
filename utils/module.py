@@ -66,8 +66,7 @@ class HMM(th.nn.Module):
         log_likelihood_lateral = (
             th.rand(out_features, out_features, dtype=dtype) * -1 - 1
         )
-
-        log_prior = th.ones(out_features, dtype=dtype) * -1
+        log_prior = th.ones(out_features, dtype=dtype)
         self.register_buffer("log_likelihood_afferent", log_likelihood_afferent)
         self.register_buffer("log_likelihood_lateral", log_likelihood_lateral)
         self.register_buffer("log_prior", log_prior)
@@ -111,24 +110,17 @@ class HMM(th.nn.Module):
         w: Float64[th.Tensor, "Batch features_1 features_2"],
         presynaptic_trace: Float64[th.Tensor, "Batch features_1"],
         postsynaptic_trace: Float64[th.Tensor, "Batch features_2"],
-        presynaptic_spike: Bool[th.Tensor, "Batch features_1"],
         postsynaptic_spike: Bool[th.Tensor, "Batch features_2"],
         time_window: float,
     ):
         pre_post = (th.exp(-w) - 1) * (
             presynaptic_trace.unsqueeze(2) @ postsynaptic_spike.double().unsqueeze(1)
         )
-        post_pre = presynaptic_spike.double().unsqueeze(2) @ (
-            postsynaptic_trace + postsynaptic_spike.double()
-        ).unsqueeze(1)
-        post_only = (
-            (
-                presynaptic_trace.unsqueeze(2) / postsynaptic_trace.unsqueeze(1)
-                < time_window
-            )
-            * (postsynaptic_trace < time_window).unsqueeze(1)
-        ).double()
-        return pre_post - post_pre - post_only
+        # post_only = (
+        #     presynaptic_trace.unsqueeze(2)
+        #     < (postsynaptic_trace.where(postsynaptic_spike.bool(), 0)).unsqueeze(1)
+        # ).double()
+        return pre_post  # - post_only
 
     def save_trace(
         self,
@@ -146,7 +138,6 @@ class HMM(th.nn.Module):
             self.log_likelihood_afferent,
             self.trace_afferent,
             self.trace_lateral,
-            afferent,
             lateral_current,
             time_window,
         )
@@ -156,7 +147,6 @@ class HMM(th.nn.Module):
             self.log_likelihood_lateral,
             self.trace_lateral,
             self.trace_lateral,
-            lateral_prev,
             lateral_current,
             time_window,
         )
@@ -169,6 +159,7 @@ class HMM(th.nn.Module):
         # Update the traces
         self.trace_afferent += -self.trace_afferent / self.tau + afferent.double()
         self.trace_lateral += -self.trace_lateral / self.tau + lateral_current.double()
+        wandb.log({f"trace_lateral_{0}": self.trace_lateral[0, 0]})
 
         ##############################################
 
@@ -180,13 +171,6 @@ class HMM(th.nn.Module):
 
         self.inverse_lr_decay += 1
         self.normalize_probs()
-
-        wandb.log(
-            {
-                f"lateral_sum_{i}": k
-                for i, k in enumerate(self.log_likelihood_lateral.exp().sum(dim=0))
-            }
-        )
 
     def to_epsp(self, x: Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]):
         x_new = th.zeros_like(x, dtype=th.float64, device=x.device)
@@ -216,6 +200,7 @@ class HMM(th.nn.Module):
                 device=device,
                 dtype=th.bool,
             )  # (Batch * Paths, out_features).
+            prev_states[:, 0] = True
 
             refractory_remains = th.zeros_like(potentials, device=device, dtype=th.int)
 
@@ -256,7 +241,7 @@ class HMM(th.nn.Module):
                     + self.log_prior
                 )  # (Batch * Paths, out_features)
                 potentials[prev_states == 1] *= (
-                    self.tau / (1 - self.tau)
+                    self.tau / (self.tau - 1)
                 ) ** self.refractory_period
 
                 posteriors = potentials.where(refractory_remains == 0, -th.inf).softmax(
@@ -319,7 +304,6 @@ class HMM(th.nn.Module):
                 },
             )
             for i in range(batch_size):
-                # acceptance[i] = 1
                 if acceptance[i]:
                     self.accept_stdp(i * self.num_paths)
                     batch_size -= 1
@@ -400,7 +384,7 @@ class HMM(th.nn.Module):
         self.log_likelihood_lateral -= self.log_likelihood_lateral.logsumexp(
             dim=1, keepdim=True
         )
-        # self.log_prior.clamp_(min=-self.ltp_constant, max=0)
+        self.log_prior.clamp_(max=0)
         # self.log_prior -= self.log_prior.logsumexp(dim=0)
 
 

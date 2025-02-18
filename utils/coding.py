@@ -56,12 +56,18 @@ def encode_data(
     x: Image | th.Tensor,
     num_steps: int = 50,
     population: int = 2,
+    prob: float = 4e-2,
     method: Literal["poisson", "temporal"] = "poisson",
 ) -> Bool[th.Tensor, "Num_steps Populations 28 28"]:
     """Encode data into Poisson spikes, where each pixel is represented by a population of neurons.
 
+    Args:
+        x (Bool[th.Tensor, "Num_steps Populations 28 28"]): Spike tensor of shape (num_steps, population, 28, 28)
+        num_steps (int): Number of time steps
+        population (int): Number of neurons per pixel
+        prob (float): (Frequency/# of time steps) of the spikes, between 0 and 1, only for Poisson encoding.
     Returns:
-        _type_: _description_
+        Bool[th.Tensor, "Num_steps Populations 28 28"]: Spike tensor of shape (num_steps, population, 28, 28)
     """
     if not isinstance(x, th.Tensor):
         x = to_tensor(x)
@@ -71,7 +77,9 @@ def encode_data(
     )  # Split the image into population parts: [0,...,population-1]
 
     if method == "poisson":
-        return poisson_spike_per_cls(x, num_steps=num_steps, population=population)
+        return poisson_spike_per_cls(
+            x, prob=prob, num_steps=num_steps, population=population
+        )
     elif method == "temporal":
         return temporal_spike_per_cls(x, num_steps=num_steps, population=population)
     else:
