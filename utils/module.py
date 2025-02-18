@@ -12,7 +12,8 @@ from jaxtyping import UInt8, Float, Float64, Int, Bool
 import wandb
 from tqdm.auto import tqdm
 
-counter = count(1)
+_trial_counter = count(1)
+_step_counter = count(1)
 state_history = []
 
 
@@ -190,7 +191,9 @@ class HMM(th.nn.Module):
         batch_size, num_steps, in_features = x.shape
 
         # Begin rejection sampling
-        for trial in tqdm(counter, leave=False, desc="Rejection sampling trials"):
+        for trial in tqdm(
+            _trial_counter, leave=False, desc="Rejection sampling trials"
+        ):
             sample_count = batch_size * self.num_paths
             potentials = th.zeros(sample_count, self.out_features, device=device)
 
@@ -278,7 +281,7 @@ class HMM(th.nn.Module):
                 for i in range(sample_count):
                     for j in range(self.out_features):
                         if states[i, j]:
-                            state_history.append([j])
+                            state_history.append([next(_step_counter), j])
 
                 prev_states = states
 
@@ -297,7 +300,7 @@ class HMM(th.nn.Module):
                     "rejection sampling/acceptance": acceptance.sum(),
                     "rejection sampling/log importance weights": log_importance_weights.mean(),
                     "state distribution": wandb.plot.histogram(
-                        wandb.Table(columns=["state"], data=state_history),
+                        wandb.Table(columns=["trial", "state"], data=state_history),
                         value="state",
                         title="State distribution",
                     ),

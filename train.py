@@ -8,6 +8,7 @@ from jaxtyping import UInt8
 from torchvision.datasets import MNIST
 from torch.utils.data import Dataset, DataLoader
 from tqdm.auto import tqdm
+import matplotlib.pyplot as plt
 import wandb
 import argparse
 
@@ -23,7 +24,7 @@ parser.add_argument("--tau", type=int, default=2)
 parser.add_argument("--stdp_window", type=int, default=2)
 parser.add_argument("--refractory_period", type=int, default=1)
 parser.add_argument("--num_paths", type=int, default=4)
-parser.add_argument("--target_rate", type=int, default=4)
+parser.add_argument("--target_rate", type=int, default=10)
 args = parser.parse_args()
 
 
@@ -111,34 +112,47 @@ if __name__ == "__main__":
             target = target.to(device)
             pred = net(data)
             if i % 1 == 0:
-                wandb.log(
-                    {
-                        f"p(x|s_{k}=1)": wandb.Image(
-                            decode_population(
-                                net.log_likelihood_afferent[:, k]
-                                .exp()
-                                .view(populations, 28, 28)
-                            )
-                        )
-                        for k in range(out_features)
-                    }
-                    | {
-                        f"p(s_{k}=1)": net.log_prior[k].item()
-                        for k in range(out_features)
-                    }
-                    | {
-                        "p(s_{t}|s_{t-1}=1)": wandb.Image(
-                            net.log_likelihood_lateral.exp()
-                        )
-                    }
-                    | {
-                        "generated": wandb.Image(
-                            decode_population(
-                                net(batch_size=1)
-                                .float()
-                                .mean(dim=1)
-                                .view(populations, 28, 28)
-                            )
-                        )
-                    }
+                log_data = {}
+                # Create heatmaps for p(x|s_k=1)
+                for k in range(out_features):
+                    arr = (
+                        net.log_likelihood_afferent[:, k]
+                        .exp()
+                        .view(populations, 28, 28)
+                        .cpu()
+                    )
+                    decoded_arr = decode_population(arr)
+                    fig, ax = plt.subplots()
+                    im = ax.imshow(decoded_arr, cmap="hot")
+                    plt.colorbar(im, ax=ax)
+                    log_data[f"$p(x|s_{k}=1)$"] = wandb.Image(fig)
+                    plt.close(fig)
+
+                # Log p(s_k=1) as scalar values
+                for k in range(out_features):
+                    log_data[f"$p(s_{k}=1)$"] = net.log_prior[k].item()
+
+                # Create heatmap for p(s_{t}|s_{t-1}=1)
+                fig, ax = plt.subplots()
+                lateral = net.log_likelihood_lateral.exp().cpu().numpy()
+                im = ax.imshow(lateral, cmap="hot")
+                plt.colorbar(im, ax=ax)
+                log_data["$p(s_{t}|s_{t-1}=1)$"] = wandb.Image(fig)
+                plt.close(fig)
+
+                # Create heatmap for generated output
+                fig, ax = plt.subplots()
+                gen_data = (
+                    net(batch_size=1)
+                    .float()
+                    .mean(dim=1)
+                    .view(populations, 28, 28)
+                    .cpu()
                 )
+                decoded_gen = decode_population(gen_data)
+                im = ax.imshow(decoded_gen, cmap="hot")
+                plt.colorbar(im, ax=ax)
+                log_data["generated"] = wandb.Image(fig)
+                plt.close(fig)
+
+                wandb.log(log_data)
