@@ -35,6 +35,7 @@ class HMM(th.nn.Module):
         stdp_window: float = 10.0,
         refractory_period: int = 5,
         num_paths: int = 10,
+        batch_size: int = 1,
         num_steps: int = 50,
         dtype: th.dtype = th.float64,
     ) -> None:
@@ -54,6 +55,8 @@ class HMM(th.nn.Module):
         "Refractory period for the membrane potential"
         self.num_paths = num_paths
         "Number of paths to get the mean of the importance weights"
+        self.batch_size = batch_size
+        "Batch size"
         self.num_steps = num_steps
         "Number of time steps"
         self.ltp_constant = 7
@@ -85,24 +88,27 @@ class HMM(th.nn.Module):
         self.db: Float64[th.Tensor, "Batch out_features"]
         """Float64[th.Tensor, "Batch out_features"]"""
 
-    def reset_trace(self, batch: int, device: th.device) -> None:
+    def reset_trace(self, device: th.device) -> None:
+        sample_size = self.batch_size * self.num_paths
         self.trace_afferent = th.zeros(
-            (batch, self.in_features), dtype=th.float64, device=device
+            (sample_size, self.in_features), dtype=th.float64, device=device
         )
         self.trace_lateral = th.zeros(
-            (batch, self.out_features), dtype=th.float64, device=device
+            (sample_size, self.out_features), dtype=th.float64, device=device
         )
         self.dw_afferent = th.zeros(
-            (batch, self.in_features, self.out_features),
+            (sample_size, self.in_features, self.out_features),
             dtype=th.float64,
             device=device,
         )
         self.dw_lateral = th.zeros(
-            (batch, self.out_features, self.out_features),
+            (sample_size, self.out_features, self.out_features),
             dtype=th.float64,
             device=device,
         )
-        self.db = th.zeros((batch, self.out_features), dtype=th.float64, device=device)
+        self.db = th.zeros(
+            (sample_size, self.out_features), dtype=th.float64, device=device
+        )
 
     # trace_table = []
 
@@ -219,7 +225,7 @@ class HMM(th.nn.Module):
                     self.log_likelihood_lateral.T.exp()
                 )
             ).log()  # (in_features, out_features)
-            self.reset_trace(sample_count, device)
+            self.reset_trace(device)
 
             for t in range(num_steps):
                 x_t = x[:, t].repeat_interleave(

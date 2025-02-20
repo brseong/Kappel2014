@@ -16,10 +16,10 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--num_steps", type=int, default=100)
 parser.add_argument("--population", type=int, default=2)
 parser.add_argument("--num_epochs", type=int, default=1)
-parser.add_argument("--batch_size", type=int, default=10)
+parser.add_argument("--batch_size", type=int, default=1)
 parser.add_argument("--num_workers", type=int, default=4)
-parser.add_argument("--feature_map", type=int, nargs="+", default=[0, 3])
-parser.add_argument("--learning_rate", type=float, default=5e-3)
+parser.add_argument("--feature_map", type=int, nargs="+", default=[0, 3, 4])
+parser.add_argument("--learning_rate", type=float, default=5e-1)
 parser.add_argument("--tau", type=int, default=2)
 parser.add_argument("--stdp_window", type=int, default=2)
 parser.add_argument("--refractory_period", type=int, default=1)
@@ -43,7 +43,7 @@ refractory_period = args.refractory_period
 num_paths = args.num_paths
 target_rate = args.target_rate
 in_features = 28 * 28 * populations
-out_features = 1 + len(feature_map) * 4  # 10 classes default. one for start state.
+out_features = 1 + len(feature_map) * 10  # 10 classes default. one for start state.
 device = th.device("cuda:3" if th.cuda.is_available() else "cpu")
 
 wandb.init(
@@ -94,8 +94,9 @@ if __name__ == "__main__":
         stdp_window,
         refractory_period,
         num_paths,
+        batch_size,
     ).to(device)
-    wandb.watch(net)  # type: ignore
+    wandb.watch(net, log="parameters")  # type: ignore
 
     ewma = 0.5  # To inspect the clustering of the likelihoods
     for epoch in range(num_epochs):

@@ -43,10 +43,10 @@ class Nessler2009(Module):
         "Constant for the LTP rule"
         self.dtype = dtype
 
-        log_likelihood = th.rand((in_features, out_features), dtype=dtype) * -1 - 1
-        # likelihood = th.full((in_features, out_features), 0.5, dtype=th.float64)
-        log_prior = th.rand((out_features,), dtype=dtype) * -1 - 1
-        # prior = th.full((out_features,), 0.5, dtype=th.float64)
+        # log_likelihood = th.rand((in_features, out_features), dtype=dtype) * -1 - 1
+        log_likelihood = th.full((in_features, out_features), 1, dtype=th.float64)
+        # log_prior = th.rand((out_features,), dtype=dtype) * -1 - 1
+        log_prior = th.full((out_features,), 1, dtype=th.float64)
         self.register_buffer("log_likelihood", log_likelihood)
         self.register_buffer("log_prior", log_prior)
         self.normalize_probs()
