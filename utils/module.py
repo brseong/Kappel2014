@@ -116,46 +116,34 @@ class HMM(th.nn.Module):
         self,
         w: Float64[th.Tensor, "Batch features_1 features_2"],
         presynaptic_trace: Float64[th.Tensor, "Batch features_1"],
-        postsynaptic_trace: Float64[th.Tensor, "Batch features_2"],
         postsynaptic_spike: Bool[th.Tensor, "Batch features_2"],
-        time_window: float,
     ):
         pre_post = (th.exp(-w) - 1) * (
             presynaptic_trace.unsqueeze(2) @ postsynaptic_spike.double().unsqueeze(1)
         )
-        # post_only = (
-        #     presynaptic_trace.unsqueeze(2)
-        #     < (postsynaptic_trace.where(postsynaptic_spike.bool(), 0)).unsqueeze(1)
-        # ).double()
-        return pre_post  # - post_only
+        return pre_post
 
     def save_trace(
         self,
         afferent: Bool[th.Tensor, "Batch in_features"],
-        lateral_prev: Bool[th.Tensor, "Batch out_features"],
         lateral_current: Bool[th.Tensor, "Batch out_features"],
     ):
         # To avoid the division by zero
         self.trace_afferent.clamp_(min=1e-7)
         self.trace_lateral.clamp_(min=1e-7)
-        time_window = (1 - 1 / self.tau) ** self.stdp_window
         ##############################################
         # Save the afferent stdp
         self.dw_afferent += self.calculate_dw(
             self.log_likelihood_afferent,
             self.trace_afferent,
-            self.trace_lateral,
             lateral_current,
-            time_window,
         )
         ##############################################
         # Save the lateral stdp
         self.dw_lateral += self.calculate_dw(
             self.log_likelihood_lateral,
             self.trace_lateral,
-            self.trace_lateral,
             lateral_current,
-            time_window,
         )
         ##############################################
         # Save the prior stdp
@@ -282,7 +270,7 @@ class HMM(th.nn.Module):
                         )
                     log_importance_weights += instantaneous_input_ll
 
-                self.save_trace(x_t, prev_states, states)
+                self.save_trace(x_t, states)
 
                 for i in range(sample_count):
                     for j in range(self.out_features):
@@ -327,10 +315,10 @@ class HMM(th.nn.Module):
     def forward_gen(
         self, batch_size: int
     ) -> Bool[th.Tensor, "Batch Num_steps Num_Population*28*28"]:
-        hidden_states = Categorical(self.log_prior.softmax(dim=0)).sample((batch_size,))
-        hidden_states = F.one_hot(
-            hidden_states, self.out_features
-        ).bool()  # (Batch, out_features)
+        hidden_states = Bernoulli(self.log_prior.softmax(dim=0)).sample((batch_size,))
+        # hidden_states = F.one_hot(
+        #     hidden_states, self.out_features
+        # ).bool()  # (Batch, out_features)
 
         x = th.zeros(
             batch_size,
@@ -340,24 +328,27 @@ class HMM(th.nn.Module):
             device=self.log_likelihood_afferent.device,
         )
 
-        for t in range(self.num_steps - 1, -1, -1):
+        for t in range(self.num_steps):
             state_distribution = (
-                self.log_likelihood_lateral.exp() @ hidden_states.T.double()
-            ).T.log()  # (Batch, out_features)
-            state_distribution += self.log_prior
-            hidden_states = Categorical(
+                hidden_states.double()
+                @ self.log_likelihood_lateral.exp()
+                * self.log_prior.exp()
+            )  # (Batch, out_features)
+            hidden_states = Bernoulli(
                 state_distribution.softmax(dim=1)
-            ).sample()  # (Batch)
+            ).sample()  # (Batch, out_features)
 
-            x[:, t, :] = (
-                Bernoulli(self.log_likelihood_afferent[:, hidden_states].exp())
-                .sample()
-                .T
-            )  # (Batch, in_features)
+            afferent_distribution = (
+                hidden_states.double() @ self.log_likelihood_afferent.T
+            ).exp()  # (Batch, in_features)
 
-            hidden_states = F.one_hot(
-                hidden_states, self.out_features
-            ).bool()  # (Batch, out_features)
+            x[:, t, :] = Bernoulli(
+                afferent_distribution.clamp(max=1)
+            ).sample()  # (Batch, in_features)
+
+            # hidden_states = F.one_hot(
+            #     hidden_states, self.out_features
+            # ).bool()  # (Batch, out_features)
 
         return x
 
